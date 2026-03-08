@@ -6,6 +6,7 @@ export enum EventPriority {
 
 export enum EventSource {
   Telegram = 'telegram',
+  Terminal = 'terminal',
   Browser = 'browser',
   N8n = 'n8n',
   Rss = 'rss',

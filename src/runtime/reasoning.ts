@@ -8,7 +8,6 @@ import { ollamaChat, ollamaHealthCheck } from '../lib/ollama.js'
 import type { IChatMessage } from '../lib/ollama.js'
 
 const DEFAULT_CONTEXT_TOKEN_BUDGET = 4096
-const DEFAULT_MODEL = 'llama3.2'
 
 export async function runReasoning(
   config: IEnvConfig,
@@ -41,7 +40,7 @@ export async function runReasoning(
   const promptContext = buildPromptContext(memory, DEFAULT_CONTEXT_TOKEN_BUDGET)
 
   const userPayload = batch.events
-    .map((e, idx) => `[${idx + 1}] (${e.createdAt}) ${e.payload}`)
+    .map((e, idx) => `[${idx + 1}] (${e.createdAt}) [source:${e.source}] ${e.payload}`)
     .join('\n')
 
   const messages: IChatMessage[] = [
@@ -67,11 +66,11 @@ export async function runReasoning(
     },
   ]
 
-  console.log(`[reasoning] sending ${messages.length} messages to Ollama (model=${DEFAULT_MODEL})`)
+  console.log(`[reasoning] sending ${messages.length} messages to Ollama (model=${config.ollamaModel})`)
 
   let response: string
   try {
-    response = await ollamaChat(config, DEFAULT_MODEL, messages)
+    response = await ollamaChat(config, config.ollamaModel, messages)
   } catch (err: unknown) {
     const errMsg = err instanceof Error ? err.message : String(err)
     console.error(`[reasoning] Ollama error: ${errMsg}`)
@@ -129,11 +128,11 @@ export async function runThoughtLoop(
     },
   ]
 
-  console.log(`[thought-loop] sending reflection to Ollama (model=${DEFAULT_MODEL})`)
+  console.log(`[thought-loop] sending reflection to Ollama (model=${config.ollamaModel})`)
 
   let response: string
   try {
-    response = await ollamaChat(config, DEFAULT_MODEL, messages)
+    response = await ollamaChat(config, config.ollamaModel, messages)
   } catch (err: unknown) {
     const errMsg = err instanceof Error ? err.message : String(err)
     console.error(`[thought-loop] Ollama error: ${errMsg}`)
@@ -185,7 +184,7 @@ export async function runSummarization(
   ]
 
   try {
-    const response = await ollamaChat(config, DEFAULT_MODEL, messages)
+    const response = await ollamaChat(config, config.ollamaModel, messages)
     console.log(`[summarization] ${milestone} summary generated (${response.length} chars)`)
     return response
   } catch (err: unknown) {

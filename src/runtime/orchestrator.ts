@@ -3,8 +3,13 @@ import type { IRuntimeContext } from './types.js'
 import { loadMemoryContext } from '../memory/memory-loader.js'
 import { runReasoning, runThoughtLoop, runSummarization } from './reasoning.js'
 import { parseMilestones, findSummarizationCandidates, readRunContents, writeSummary, cleanupOldRuns } from '../memory/summarization.js'
-import { EventPriority, EventSource, JobStatus } from '../queue/types.js'
-import type { IJob } from '../queue/types.js'
+import { EventSource, JobStatus } from '../queue/types.js'
+import type { ICoalescedBatch, IJob } from '../queue/types.js'
+
+const SOURCE_TO_CHANNEL: Record<string, string> = {
+  [EventSource.Telegram]: 'telegram',
+  [EventSource.Terminal]: 'terminal',
+}
 
 export class Orchestrator {
   private readonly ctx: IRuntimeContext
@@ -125,6 +130,8 @@ export class Orchestrator {
         job.status = JobStatus.Done
         this.ctx.eventQueue.moveJob(job, JobStatus.Processing, JobStatus.Done)
         console.log(`[loop-2:executor] === job ${job.id} done ===`)
+
+        await this.dispatchResponse(batch, result)
       } catch (err: unknown) {
         const errMsg = err instanceof Error ? err.message : String(err)
         console.error(`[loop-2:executor] job ${job.id} failed: ${errMsg}`)
@@ -136,6 +143,31 @@ export class Orchestrator {
 
       this.currentJobId = undefined
       this.lastJobFinishedAt = Date.now()
+    }
+  }
+
+  private async dispatchResponse(batch: ICoalescedBatch, response: string): Promise<void> {
+    const source = batch.events[0]?.source
+    if (!source) {
+      return
+    }
+
+    const channelKind = SOURCE_TO_CHANNEL[source]
+    if (!channelKind) {
+      return
+    }
+
+    const adapter = this.ctx.channels.find((ch) => ch.kind === channelKind)
+    if (!adapter) {
+      console.log(`[orchestrator] no channel adapter for ${channelKind}, response not delivered`)
+      return
+    }
+
+    try {
+      await adapter.sendResponse(batch.chatId, response)
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : String(err)
+      console.error(`[orchestrator] failed to send response via ${channelKind}: ${errMsg}`)
     }
   }
 

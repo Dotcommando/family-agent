@@ -1,4 +1,5 @@
 import type { IIntegration } from '../integrations/types.js'
+import type { IChannelAdapter } from '../channels/types.js'
 import type { EventBus } from '../queue/event-bus.js'
 import type { EventQueue } from '../queue/event-queue.js'
 import type { IEnvConfig } from '../config/env.js'
@@ -10,4 +11,5 @@ export interface IRuntimeContext {
   eventBus: EventBus
   eventQueue: EventQueue
   integrations: ReadonlyArray<IIntegration>
+  channels: ReadonlyArray<IChannelAdapter>
 }

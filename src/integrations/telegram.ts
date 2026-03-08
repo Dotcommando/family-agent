@@ -3,13 +3,14 @@ import type { IIntegration } from './types.js'
 import type { IAppSecrets } from '../config/types.js'
 import type { EventBus } from '../queue/event-bus.js'
 import { EventSource, EventPriority } from '../queue/types.js'
+import { TelegramAdapter } from '../channels/telegram-adapter.js'
 
 export class TelegramIntegration implements IIntegration {
   readonly name = 'telegram'
+  readonly adapter = new TelegramAdapter()
   private currentStatus: IntegrationStatus = IntegrationStatus.NotConfigured
   private readonly secrets: IAppSecrets
   private readonly eventBus: EventBus
-  private pollInterval: ReturnType<typeof setInterval> | undefined
 
   constructor(secrets: IAppSecrets, eventBus: EventBus) {
     this.secrets = secrets
@@ -51,10 +52,6 @@ export class TelegramIntegration implements IIntegration {
   }
 
   async stop(): Promise<void> {
-    if (this.pollInterval) {
-      clearInterval(this.pollInterval)
-      this.pollInterval = undefined
-    }
     // TODO: await this.client?.disconnect()
     this.currentStatus = IntegrationStatus.NotConfigured
     console.log('[telegram] stopped')

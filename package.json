@@ -6,11 +6,15 @@
   "engines": {
     "node": ">=24.0.0"
   },
+  "bin": {
+    "famagent": "dist/cli.js"
+  },
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "start": "node --enable-source-maps dist/index.js",
     "build": "tsc -p tsconfig.json",
-    "check": "tsc --noEmit -p tsconfig.json"
+    "check": "tsc --noEmit -p tsconfig.json",
+    "cli": "node --enable-source-maps dist/cli.js"
   },
   "dependencies": {
     "@lancedb/lancedb": "0.18.2"

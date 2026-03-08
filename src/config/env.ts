@@ -1,7 +1,8 @@
-interface IEnvConfig {
+export interface IEnvConfig {
   agentName: string
   agentPort: number
   ollamaBaseUrl: string
+  ollamaModel: string
   lanceDbDir: string
   memoryDir: string
   secretsDir: string
@@ -25,6 +26,7 @@ interface IEnvConfig {
   summaryMaxConcurrent: number
   summaryRawRetentionDays: number
   purposeDir: string
+  terminalChatDir: string
 }
 
 function readNumberEnv(name: string, fallback: number): number {
@@ -73,6 +75,7 @@ export function readEnvConfig(): IEnvConfig {
     agentName: process.env.AGENT_NAME ?? 'family-agent',
     agentPort: readNumberEnv('AGENT_PORT', 3000),
     ollamaBaseUrl: process.env.OLLAMA_BASE_URL ?? 'http://ollama:11434',
+    ollamaModel: process.env.OLLAMA_MODEL ?? 'llama3.2',
     lanceDbDir: process.env.LANCEDB_DIR ?? '/app/data/lancedb',
     memoryDir: process.env.MEMORY_DIR ?? '/app/memory',
     secretsDir: process.env.SECRETS_DIR ?? '/run/secrets',
@@ -95,8 +98,7 @@ export function readEnvConfig(): IEnvConfig {
     summaryMinIdleSeconds: readNumberEnv('AGENT_SUMMARY_MIN_IDLE_SECONDS', 60),
     summaryMaxConcurrent: readNumberEnv('AGENT_SUMMARY_MAX_CONCURRENT', 1),
     summaryRawRetentionDays: readNumberEnv('AGENT_SUMMARY_RAW_RETENTION_DAYS', 14),
-    purposeDir: process.env.PURPOSE_DIR ?? '/app/state/purpose'
+    purposeDir: process.env.PURPOSE_DIR ?? '/app/state/purpose',
+    terminalChatDir: process.env.TERMINAL_CHAT_DIR ?? '/app/state/terminal-chat',
   }
 }
-
-export type { IEnvConfig }

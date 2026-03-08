@@ -11,6 +11,7 @@ import { TelegramIntegration } from './integrations/telegram.js'
 import { BrowserIntegration } from './integrations/browser.js'
 import { N8nIntegration } from './integrations/n8n.js'
 import { BlogIntegration } from './integrations/blog.js'
+import { TerminalAdapter } from './channels/terminal-adapter.js'
 
 function ensureMemoryFiles(memoryDir: string, milestones: string[]): void {
   const nextRunPath = join(memoryDir, 'plans', 'next-run.md')
@@ -40,19 +41,7 @@ function ensureQueueDirs(queueDir: string): void {
 async function bootstrap(): Promise<void> {
   const envConfig = readEnvConfig()
   const secretStatuses = getSecretStatuses(envConfig.secretsDir)
-
-  let appSecrets;
-  try {
-    appSecrets = readAppSecrets(envConfig.secretsDir)
-  } catch {
-    console.warn('[boot] some secrets are missing — running in degraded mode')
-    appSecrets = {
-      telegramApiId: '',
-      telegramApiHash: '',
-      telegramSession: '',
-      n8nApiKey: '',
-    }
-  }
+  const appSecrets = readAppSecrets(envConfig.secretsDir)
 
   console.log('[boot] secrets status:')
   for (const status of secretStatuses) {
@@ -60,8 +49,8 @@ async function bootstrap(): Promise<void> {
     console.log(`- ${status.name}: ${label} (${status.maskedValue})`)
   }
 
-  console.log(`[boot] telegram_api_id numeric check: ${/^\d+$/.test(appSecrets.telegramApiId)}`)
   console.log(`[boot] ollama base url: ${envConfig.ollamaBaseUrl}`)
+  console.log(`[boot] ollama model: ${envConfig.ollamaModel}`)
   console.log(`[boot] thought loop seconds: ${envConfig.thoughtLoopSeconds}`)
   console.log(`[boot] event poll seconds: ${envConfig.eventPollSeconds}`)
   console.log(`[boot] coalesce window seconds: ${envConfig.coalesceWindowSeconds}`)
@@ -89,6 +78,11 @@ async function bootstrap(): Promise<void> {
   const eventBus = new EventBus()
   const eventQueue = new EventQueue(envConfig)
 
+  console.log('[boot] initializing channel adapters')
+  mkdirSync(envConfig.terminalChatDir, { recursive: true })
+  const terminalAdapter = new TerminalAdapter(envConfig.terminalChatDir)
+  console.log('[boot] terminal adapter ready — use famagent CLI to send messages')
+
   console.log('[boot] initializing integrations')
   const telegram = new TelegramIntegration(appSecrets, eventBus)
   const browser = new BrowserIntegration()
@@ -114,6 +108,7 @@ async function bootstrap(): Promise<void> {
     eventBus,
     eventQueue,
     integrations,
+    channels: [terminalAdapter, telegram.adapter],
   })
   await orchestrator.start()
 
@@ -123,6 +118,8 @@ async function bootstrap(): Promise<void> {
     secretStatuses,
     envConfig,
     integrations,
+    eventBus,
+    terminalAdapter,
   })
 
   const shutdown = async (): Promise<void> => {
