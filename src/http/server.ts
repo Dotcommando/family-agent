@@ -1,12 +1,14 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { ISecretStatus } from '../config/types.js'
 import type { IEnvConfig } from '../config/env.js'
+import type { IIntegration } from '../integrations/types.js'
 
 interface IServerOptions {
   port: number
   agentName: string
   secretStatuses: ISecretStatus[]
   envConfig: IEnvConfig
+  integrations: ReadonlyArray<IIntegration>
 }
 
 function sendJson(response: ServerResponse, statusCode: number, payload: unknown): void {
@@ -22,10 +24,17 @@ export function startHttpServer(options: IServerOptions): void {
       sendJson(response, 200, {
         ok: true,
         secrets: options.secretStatuses,
+        integrations: options.integrations.map((i) => ({
+          name: i.name,
+          status: i.status(),
+        })),
         config: {
           thoughtLoopSeconds: options.envConfig.thoughtLoopSeconds,
           eventPollSeconds: options.envConfig.eventPollSeconds,
           coalesceWindowSeconds: options.envConfig.coalesceWindowSeconds,
+          messageBatchWindowSeconds: options.envConfig.messageBatchWindowSeconds,
+          chatCoalesceMaxItems: options.envConfig.chatCoalesceMaxItems,
+          eventQueueStrategy: options.envConfig.eventQueueStrategy,
           summarizationMilestones: options.envConfig.summarizationMilestones,
           summarizationMaxInputItems: options.envConfig.summarizationMaxInputItems,
           queueDir: options.envConfig.queueDir
@@ -38,7 +47,7 @@ export function startHttpServer(options: IServerOptions): void {
     sendJson(response, 200, {
       ok: true,
       service: options.agentName,
-      message: 'Agent scaffold is running'
+      message: 'Agent is running'
     })
   })
 

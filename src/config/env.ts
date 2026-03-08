@@ -12,6 +12,10 @@ interface IEnvConfig {
   maxConcurrentJobs: number
   proactiveMode: boolean
   coalesceWindowSeconds: number
+  messageBatchWindowSeconds: number
+  chatCoalesceMaxItems: number
+  eventQueueStrategy: string
+  thoughtLoopSkipWhenQueueNotEmpty: boolean
   dedupThoughtLoop: boolean
   dedupSummaryJobs: boolean
   summarizationMilestones: string[]
@@ -20,6 +24,7 @@ interface IEnvConfig {
   summaryMinIdleSeconds: number
   summaryMaxConcurrent: number
   summaryRawRetentionDays: number
+  purposeDir: string
 }
 
 function readNumberEnv(name: string, fallback: number): number {
@@ -78,6 +83,10 @@ export function readEnvConfig(): IEnvConfig {
     maxConcurrentJobs: readNumberEnv('AGENT_MAX_CONCURRENT_JOBS', 1),
     proactiveMode: readBooleanEnv('AGENT_PROACTIVE_MODE', true),
     coalesceWindowSeconds: readNumberEnv('AGENT_COALESCE_WINDOW_SECONDS', 45),
+    messageBatchWindowSeconds: readNumberEnv('AGENT_MESSAGE_BATCH_WINDOW_SECONDS', 30),
+    chatCoalesceMaxItems: readNumberEnv('AGENT_CHAT_COALESCE_MAX_ITEMS', 20),
+    eventQueueStrategy: process.env.AGENT_EVENT_QUEUE_STRATEGY ?? 'priority-fifo',
+    thoughtLoopSkipWhenQueueNotEmpty: readBooleanEnv('AGENT_THOUGHT_LOOP_SKIP_WHEN_QUEUE_NOT_EMPTY', true),
     dedupThoughtLoop: readBooleanEnv('AGENT_DEDUP_THOUGHT_LOOP', true),
     dedupSummaryJobs: readBooleanEnv('AGENT_DEDUP_SUMMARY_JOBS', true),
     summarizationMilestones: readListEnv('AGENT_SUMMARIZATION_MILESTONES', ['1h', '3h', '6h', '24h', '7d', '30d', '90d', '180d', '365d']),
@@ -85,7 +94,8 @@ export function readEnvConfig(): IEnvConfig {
     summaryRunOnlyWhenIdle: readBooleanEnv('AGENT_SUMMARY_RUN_ONLY_WHEN_IDLE', true),
     summaryMinIdleSeconds: readNumberEnv('AGENT_SUMMARY_MIN_IDLE_SECONDS', 60),
     summaryMaxConcurrent: readNumberEnv('AGENT_SUMMARY_MAX_CONCURRENT', 1),
-    summaryRawRetentionDays: readNumberEnv('AGENT_SUMMARY_RAW_RETENTION_DAYS', 14)
+    summaryRawRetentionDays: readNumberEnv('AGENT_SUMMARY_RAW_RETENTION_DAYS', 14),
+    purposeDir: process.env.PURPOSE_DIR ?? '/app/state/purpose'
   }
 }
 
