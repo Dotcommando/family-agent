@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, writeFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { readEnvConfig } from './config/env.js'
 import { getSecretStatuses, readAppSecrets } from './config/secrets.js'
@@ -71,8 +71,12 @@ async function bootstrap(): Promise<void> {
   await ensureMemoryTable(db)
   console.log(`[boot] LanceDB is ready at ${envConfig.lanceDbDir}`)
 
-  console.log('[boot] loading purpose file')
-  mkdirSync(envConfig.purposeDir, { recursive: true })
+  const purposeFilePath = join(envConfig.purposeDir, 'main.md')
+  if (existsSync(purposeFilePath)) {
+    console.log('[boot] purpose file found: state/purpose/main.md')
+  } else {
+    console.log('[boot] purpose file NOT found: state/purpose/main.md — agent will operate without purpose context')
+  }
 
   console.log('[boot] initializing event bus and queue')
   const eventBus = new EventBus()

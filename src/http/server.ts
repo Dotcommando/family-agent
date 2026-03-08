@@ -6,6 +6,7 @@ import type { EventBus } from '../queue/event-bus.js'
 import type { TerminalAdapter } from '../channels/terminal-adapter.js'
 import { EventSource, EventPriority } from '../queue/types.js'
 import { TERMINAL_CHAT_ID } from '../channels/terminal-adapter.js'
+import { isRecord } from '../lib/type-utils.js'
 
 interface IServerOptions {
   port: number
@@ -15,6 +16,17 @@ interface IServerOptions {
   integrations: ReadonlyArray<IIntegration>
   eventBus: EventBus
   terminalAdapter: TerminalAdapter
+}
+
+interface ITerminalSendBody {
+  message: string
+}
+
+function isTerminalSendBody(value: unknown): value is ITerminalSendBody {
+  if (!isRecord(value)) {
+    return false
+  }
+  return typeof value['message'] === 'string' && value['message'].length > 0
 }
 
 function sendJson(response: ServerResponse, statusCode: number, payload: unknown): void {
@@ -64,25 +76,31 @@ export function startHttpServer(options: IServerOptions): void {
       void (async () => {
         try {
           const body = await readBody(request)
-          const parsed = JSON.parse(body) as { message?: string }
-          const message = parsed.message
-          if (!message) {
+          let parsed: unknown
+          try {
+            parsed = JSON.parse(body)
+          } catch {
+            sendJson(response, 400, { ok: false, error: 'invalid JSON body' })
+            return
+          }
+
+          if (!isTerminalSendBody(parsed)) {
             sendJson(response, 400, { ok: false, error: 'missing "message" field' })
             return
           }
 
-          options.terminalAdapter.logUserMessage(message)
+          options.terminalAdapter.logUserMessage(parsed.message)
           options.eventBus.emit({
             source: EventSource.Terminal,
             priority: EventPriority.User,
             chatId: TERMINAL_CHAT_ID,
-            payload: message,
+            payload: parsed.message,
             batchable: true,
           })
 
           sendJson(response, 200, { ok: true, queued: true })
         } catch {
-          sendJson(response, 400, { ok: false, error: 'invalid JSON body' })
+          sendJson(response, 400, { ok: false, error: 'invalid request' })
         }
       })()
       return

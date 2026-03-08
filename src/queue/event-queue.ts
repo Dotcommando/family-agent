@@ -1,8 +1,33 @@
-import { writeFileSync, readFileSync, readdirSync, mkdirSync, renameSync, unlinkSync } from 'node:fs'
+import { writeFileSync, readFileSync, readdirSync, mkdirSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { EventPriority, JobStatus } from './types.js'
 import type { IAgentEvent, ICoalescedBatch, IJob } from './types.js'
 import type { IEnvConfig } from '../config/env.js'
+import { isRecord } from '../lib/type-utils.js'
+
+function isAgentEvent(value: unknown): value is IAgentEvent {
+  if (!isRecord(value)) {
+    return false
+  }
+  return (
+    typeof value['id'] === 'string' &&
+    typeof value['source'] === 'string' &&
+    typeof value['priority'] === 'number' &&
+    typeof value['payload'] === 'string' &&
+    typeof value['createdAt'] === 'string' &&
+    typeof value['batchable'] === 'boolean'
+  )
+}
+
+function parseAgentEvent(raw: string): IAgentEvent | undefined {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return undefined
+  }
+  return isAgentEvent(parsed) ? parsed : undefined
+}
 
 export class EventQueue {
   private readonly pendingDir: string
@@ -37,8 +62,8 @@ export class EventQueue {
     const files = readdirSync(this.pendingDir).filter((f) => f.endsWith('.json'))
     for (const file of files) {
       const raw = readFileSync(join(this.pendingDir, file), 'utf8')
-      const event = JSON.parse(raw) as IAgentEvent
-      if (event.priority === EventPriority.User) {
+      const event = parseAgentEvent(raw)
+      if (event && event.priority === EventPriority.User) {
         return true
       }
     }
@@ -54,7 +79,10 @@ export class EventQueue {
     for (const file of files) {
       const filePath = join(this.pendingDir, file)
       const raw = readFileSync(filePath, 'utf8')
-      events.push(JSON.parse(raw) as IAgentEvent)
+      const event = parseAgentEvent(raw)
+      if (event) {
+        events.push(event)
+      }
       unlinkSync(filePath)
     }
 
@@ -79,11 +107,18 @@ export class EventQueue {
 
     for (const [chatId, chatEvents] of chatMap) {
       const limited = chatEvents.slice(-this.config.chatCoalesceMaxItems)
+      const firstCreatedAt = limited[0]?.createdAt ?? ''
+      const lastEvent = limited[limited.length - 1]
+      const lastCreatedAt = lastEvent?.createdAt ?? ''
+      const lastPayload = lastEvent?.payload ?? ''
+
       batches.push({
         chatId,
         events: limited,
-        firstAt: limited[0]?.createdAt ?? '',
-        lastAt: limited[limited.length - 1]?.createdAt ?? '',
+        firstAt: firstCreatedAt,
+        lastAt: lastCreatedAt,
+        latestPayload: lastPayload,
+        messageCount: limited.length,
       })
     }
 
@@ -93,6 +128,8 @@ export class EventQueue {
         events: [event],
         firstAt: event.createdAt,
         lastAt: event.createdAt,
+        latestPayload: event.payload,
+        messageCount: 1,
       })
     }
 
@@ -105,28 +142,25 @@ export class EventQueue {
     })
   }
 
-  persistJob(job: IJob): void {
-    const dirMap: Record<JobStatus, string> = {
-      [JobStatus.Pending]: this.pendingDir,
-      [JobStatus.Processing]: this.processingDir,
-      [JobStatus.Done]: this.doneDir,
-      [JobStatus.Failed]: this.failedDir,
+  private jobDir(status: JobStatus): string {
+    switch (status) {
+      case JobStatus.Pending: return this.pendingDir
+      case JobStatus.Processing: return this.processingDir
+      case JobStatus.Done: return this.doneDir
+      case JobStatus.Failed: return this.failedDir
     }
-    const dir = dirMap[job.status]
+  }
+
+  persistJob(job: IJob): void {
+    const dir = this.jobDir(job.status)
     const fileName = `job_${job.id}.json`
     writeFileSync(join(dir, fileName), JSON.stringify(job, null, 2))
   }
 
   moveJob(job: IJob, from: JobStatus, to: JobStatus): void {
-    const dirMap: Record<JobStatus, string> = {
-      [JobStatus.Pending]: this.pendingDir,
-      [JobStatus.Processing]: this.processingDir,
-      [JobStatus.Done]: this.doneDir,
-      [JobStatus.Failed]: this.failedDir,
-    }
     const fileName = `job_${job.id}.json`
-    const oldPath = join(dirMap[from], fileName)
-    const newPath = join(dirMap[to], fileName)
+    const oldPath = join(this.jobDir(from), fileName)
+    const newPath = join(this.jobDir(to), fileName)
     job.status = to
     try {
       unlinkSync(oldPath)

@@ -1,4 +1,5 @@
 import type { IEnvConfig } from '../config/env.js'
+import { isRecord } from './type-utils.js'
 
 export interface IChatMessage {
   role: 'system' | 'user' | 'assistant'
@@ -7,6 +8,17 @@ export interface IChatMessage {
 
 interface IOllamaResponse {
   message: { content: string }
+}
+
+function isOllamaResponse(value: unknown): value is IOllamaResponse {
+  if (!isRecord(value)) {
+    return false
+  }
+  const msg = value['message']
+  if (!isRecord(msg)) {
+    return false
+  }
+  return typeof msg['content'] === 'string'
 }
 
 export async function ollamaChat(
@@ -32,7 +44,10 @@ export async function ollamaChat(
     throw new Error(`Ollama chat failed: ${response.status} ${text}`)
   }
 
-  const data = (await response.json()) as IOllamaResponse
+  const data: unknown = await response.json()
+  if (!isOllamaResponse(data)) {
+    throw new Error('Ollama response does not match expected format')
+  }
   return data.message.content
 }
 

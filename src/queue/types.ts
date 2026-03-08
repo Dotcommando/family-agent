@@ -38,6 +38,8 @@ export interface ICoalescedBatch {
   events: ReadonlyArray<IAgentEvent>
   firstAt: string
   lastAt: string
+  latestPayload: string
+  messageCount: number
 }
 
 export interface IJob {

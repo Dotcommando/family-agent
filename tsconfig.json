@@ -13,7 +13,16 @@
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
-    "types": ["node"]
+    "types": [
+      "node"
+    ],
+    "paths": {
+      "telegram/events": [
+        "./node_modules/telegram/events/index.d.ts"
+      ]
+    }
   },
-  "include": ["src/**/*.ts"]
+  "include": [
+    "src/**/*.ts"
+  ]
 }

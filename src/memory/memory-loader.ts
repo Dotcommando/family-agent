@@ -25,8 +25,9 @@ function readMdFiles(dir: string, limit: number): IRunSummary[] {
 }
 
 export function loadMemoryContext(config: IEnvConfig): IMemoryContext {
-  console.log('[memory] loading purpose file')
-  const purpose = safeReadFile(join(config.purposeDir, 'main.md'))
+  const purposePath = join(config.purposeDir, 'main.md')
+  const purpose = safeReadFile(purposePath)
+  console.log(purpose ? '[memory] purpose file loaded' : '[memory] purpose file not found, skipping')
 
   console.log('[memory] loading identity file')
   const identity = safeReadFile(join(config.memoryDir, 'identity', 'agent.md'))

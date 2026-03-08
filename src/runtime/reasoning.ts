@@ -9,6 +9,37 @@ import type { IChatMessage } from '../lib/ollama.js'
 
 const DEFAULT_CONTEXT_TOKEN_BUDGET = 4096
 
+function buildBatchPrompt(batch: ICoalescedBatch): string {
+  const lines: string[] = []
+
+  if (batch.messageCount === 1) {
+    lines.push(`A message arrived from chat ${batch.chatId}:`)
+    lines.push('')
+    lines.push(batch.latestPayload)
+  } else {
+    lines.push(`${batch.messageCount} messages arrived from chat ${batch.chatId} (oldest first):`)
+    lines.push('')
+    for (let i = 0; i < batch.events.length; i++) {
+      const event = batch.events[i]
+      if (event) {
+        lines.push(`[${i + 1}/${batch.messageCount}] (${event.createdAt}) ${event.payload}`)
+      }
+    }
+    lines.push('')
+    lines.push(`--- Latest message (${batch.messageCount}/${batch.messageCount}) ---`)
+    lines.push(batch.latestPayload)
+    lines.push('---')
+    lines.push('')
+    lines.push('IMPORTANT: Later messages may override, refine, or cancel earlier ones.')
+    lines.push('The latest message represents the most current user intent.')
+    lines.push('If messages contradict each other, follow the latest one.')
+  }
+
+  lines.push('')
+  lines.push('Respond concisely. State what you will do and any notes for your next iteration.')
+  return lines.join('\n')
+}
+
 export async function runReasoning(
   config: IEnvConfig,
   memory: IMemoryContext,
@@ -18,7 +49,7 @@ export async function runReasoning(
   const startedAt = new Date().toISOString()
 
   console.log(`[reasoning] === start run ${runId} ===`)
-  console.log(`[reasoning] chat=${batch.chatId} events=${batch.events.length} window=${batch.firstAt}..${batch.lastAt}`)
+  console.log(`[reasoning] chat=${batch.chatId} events=${batch.messageCount} window=${batch.firstAt}..${batch.lastAt}`)
 
   const ollamaOk = await ollamaHealthCheck(config)
   if (!ollamaOk) {
@@ -30,18 +61,14 @@ export async function runReasoning(
       runId,
       startedAt,
       finishedAt,
-      summary: `Ollama unreachable. ${batch.events.length} event(s) acknowledged but not processed by LLM.`,
-      nextRunPlan: `# Next run\n\n- Retry processing ${batch.events.length} queued event(s) once Ollama is available.\n`,
+      summary: `Ollama unreachable. ${batch.messageCount} event(s) acknowledged but not processed by LLM.`,
+      nextRunPlan: `# Next run\n\n- Retry processing ${batch.messageCount} queued event(s) once Ollama is available.\n`,
     })
 
     return msg
   }
 
   const promptContext = buildPromptContext(memory, DEFAULT_CONTEXT_TOKEN_BUDGET)
-
-  const userPayload = batch.events
-    .map((e, idx) => `[${idx + 1}] (${e.createdAt}) [source:${e.source}] ${e.payload}`)
-    .join('\n')
 
   const messages: IChatMessage[] = [
     {
@@ -55,14 +82,7 @@ export async function runReasoning(
     },
     {
       role: 'user',
-      content: [
-        `The following ${batch.events.length} message(s) arrived from chat ${batch.chatId}:`,
-        '',
-        userPayload,
-        '',
-        'If later messages override earlier ones, follow the latest intent.',
-        'Respond concisely. State what you will do and any notes for your next iteration.',
-      ].join('\n'),
+      content: buildBatchPrompt(batch),
     },
   ]
 

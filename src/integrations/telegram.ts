@@ -11,6 +11,7 @@ export class TelegramIntegration implements IIntegration {
   private currentStatus: IntegrationStatus = IntegrationStatus.NotConfigured
   private readonly secrets: IAppSecrets
   private readonly eventBus: EventBus
+  private disconnectFn: (() => Promise<void>) | undefined
 
   constructor(secrets: IAppSecrets, eventBus: EventBus) {
     this.secrets = secrets
@@ -23,7 +24,14 @@ export class TelegramIntegration implements IIntegration {
 
   async start(): Promise<void> {
     if (!this.secrets.telegramApiId || !this.secrets.telegramApiHash || !this.secrets.telegramSession) {
-      console.log('[telegram] missing required secrets, skipping start')
+      console.log('[telegram] missing required secrets (telegram_api_id, telegram_api_hash, telegram_session), skipping start')
+      this.currentStatus = IntegrationStatus.NotConfigured
+      return
+    }
+
+    const apiId = Number(this.secrets.telegramApiId)
+    if (!Number.isFinite(apiId) || apiId <= 0) {
+      console.log('[telegram] telegram_api_id is not a valid number, skipping start')
       this.currentStatus = IntegrationStatus.NotConfigured
       return
     }
@@ -31,43 +39,66 @@ export class TelegramIntegration implements IIntegration {
     console.log('[telegram] starting MTProto user account client')
     this.currentStatus = IntegrationStatus.Connecting
 
-    // TODO: Initialize gram.js / telegram client with MTProto user session
-    // const { TelegramClient } = await import('telegram')
-    // const { StringSession } = await import('telegram/sessions')
-    // const session = new StringSession(this.secrets.telegramSession)
-    // this.client = new TelegramClient(
-    //   session,
-    //   Number(this.secrets.telegramApiId),
-    //   this.secrets.telegramApiHash,
-    //   { connectionRetries: 5 }
-    // )
-    // await this.client.connect()
+    try {
+      const { TelegramClient, sessions, } = await import('telegram')
+      const { NewMessage } = await import('telegram/events')
 
-    this.currentStatus = IntegrationStatus.Connected
-    console.log('[telegram] client connected (stub mode — real MTProto pending)')
+      const session = new sessions.StringSession(this.secrets.telegramSession)
+      const client = new TelegramClient(session, apiId, this.secrets.telegramApiHash, {
+        connectionRetries: 5,
+      })
 
-    // TODO: Replace stub with real message handler
-    // this.client.addEventHandler((event) => { ... }, new NewMessage({}))
-    this.startStubPoll()
+      await client.connect()
+
+      this.disconnectFn = async () => {
+        await client.disconnect()
+      }
+
+      this.adapter.setSendFn(async (chatId: string, text: string) => {
+        await client.sendMessage(chatId, { message: text })
+        console.log(`[telegram] sent response to chat ${chatId} (${text.length} chars)`)
+      })
+
+      client.addEventHandler((event) => {
+        const message = event.message
+        if (!message || !message.text) {
+          return
+        }
+
+        const chatId = message.chatId !== undefined ? String(message.chatId) : 'unknown'
+        const senderId = message.senderId !== undefined ? String(message.senderId) : 'unknown'
+
+        console.log(`[telegram] incoming message from chat=${chatId} sender=${senderId} msgId=${message.id}`)
+
+        this.eventBus.emit({
+          source: EventSource.Telegram,
+          priority: EventPriority.User,
+          chatId,
+          payload: message.text,
+          batchable: true,
+        })
+      }, new NewMessage({}))
+
+      this.currentStatus = IntegrationStatus.Connected
+      console.log('[telegram] MTProto client connected and listening for messages')
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : String(err)
+      console.error(`[telegram] failed to connect: ${errMsg}`)
+      this.currentStatus = IntegrationStatus.Error
+    }
   }
 
   async stop(): Promise<void> {
-    // TODO: await this.client?.disconnect()
+    if (this.disconnectFn) {
+      try {
+        await this.disconnectFn()
+      } catch (err: unknown) {
+        const errMsg = err instanceof Error ? err.message : String(err)
+        console.error(`[telegram] error during disconnect: ${errMsg}`)
+      }
+      this.disconnectFn = undefined
+    }
     this.currentStatus = IntegrationStatus.NotConfigured
     console.log('[telegram] stopped')
-  }
-
-  private startStubPoll(): void {
-    console.log('[telegram] stub poll active — no real messages will arrive until MTProto is wired')
-  }
-
-  handleIncomingMessage(chatId: string, text: string): void {
-    this.eventBus.emit({
-      source: EventSource.Telegram,
-      priority: EventPriority.User,
-      chatId,
-      payload: text,
-      batchable: true,
-    })
   }
 }

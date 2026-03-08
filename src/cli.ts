@@ -2,6 +2,10 @@
 
 const AGENT_URL = process.env.AGENT_URL ?? 'http://localhost:3000'
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
 interface IHistoryEntry {
   role: string
   channel: string
@@ -9,9 +13,27 @@ interface IHistoryEntry {
   timestamp: string
 }
 
+function isHistoryEntry(value: unknown): value is IHistoryEntry {
+  if (!isRecord(value)) {
+    return false
+  }
+  return (
+    typeof value['role'] === 'string' &&
+    typeof value['text'] === 'string' &&
+    typeof value['timestamp'] === 'string'
+  )
+}
+
 interface IHistoryResponse {
   ok: boolean
   entries: IHistoryEntry[]
+}
+
+function isHistoryResponse(value: unknown): value is IHistoryResponse {
+  if (!isRecord(value)) {
+    return false
+  }
+  return typeof value['ok'] === 'boolean' && Array.isArray(value['entries'])
 }
 
 interface ISendResponse {
@@ -20,11 +42,37 @@ interface ISendResponse {
   error?: string
 }
 
+function isSendResponse(value: unknown): value is ISendResponse {
+  if (!isRecord(value)) {
+    return false
+  }
+  return typeof value['ok'] === 'boolean'
+}
+
+interface IHealthIntegration {
+  name: string
+  status: string
+}
+
+function isHealthIntegration(value: unknown): value is IHealthIntegration {
+  if (!isRecord(value)) {
+    return false
+  }
+  return typeof value['name'] === 'string' && typeof value['status'] === 'string'
+}
+
 interface IHealthResponse {
   ok: boolean
-  integrations?: Array<{ name: string; status: string }>
-  config?: Record<string, unknown>
+  integrations?: IHealthIntegration[]
+  config?: Record<string, string | number | boolean>
   timestamp?: string
+}
+
+function isHealthResponse(value: unknown): value is IHealthResponse {
+  if (!isRecord(value)) {
+    return false
+  }
+  return typeof value['ok'] === 'boolean'
 }
 
 function usage(): void {
@@ -47,13 +95,18 @@ async function sendMessage(text: string): Promise<void> {
       body: JSON.stringify({ message: text }),
     })
 
-    const data = (await res.json()) as ISendResponse
-    if (data.ok) {
+    const raw: unknown = await res.json()
+    if (!isSendResponse(raw)) {
+      console.error('✗ Неожиданный ответ от агента')
+      return
+    }
+
+    if (raw.ok) {
       console.log(`✓ Сообщение поставлено в очередь`)
       console.log(`  Агент обработает его в следующем цикле.`)
       console.log(`  Чтобы увидеть ответ: famagent --history 5`)
     } else {
-      console.error(`✗ Ошибка: ${data.error ?? 'unknown'}`)
+      console.error(`✗ Ошибка: ${raw.error ?? 'unknown'}`)
     }
   } catch (err: unknown) {
     const errMsg = err instanceof Error ? err.message : String(err)
@@ -65,14 +118,20 @@ async function sendMessage(text: string): Promise<void> {
 async function showHistory(count: number): Promise<void> {
   try {
     const res = await fetch(`${AGENT_URL}/terminal/history?n=${count}`)
-    const data = (await res.json()) as IHistoryResponse
+    const raw: unknown = await res.json()
 
-    if (!data.ok || data.entries.length === 0) {
+    if (!isHistoryResponse(raw)) {
+      console.log('(неожиданный формат ответа)')
+      return
+    }
+
+    const entries = raw.entries.filter(isHistoryEntry)
+    if (!raw.ok || entries.length === 0) {
       console.log('(пусто — пока нет сообщений)')
       return
     }
 
-    for (const entry of data.entries) {
+    for (const entry of entries) {
       const time = new Date(entry.timestamp).toLocaleString()
       const prefix = entry.role === 'user' ? '👤 Вы' : '🤖 Агент'
       console.log(`[${time}] ${prefix}:`)
@@ -88,21 +147,28 @@ async function showHistory(count: number): Promise<void> {
 async function showStatus(): Promise<void> {
   try {
     const res = await fetch(`${AGENT_URL}/health`)
-    const data = (await res.json()) as IHealthResponse
+    const raw: unknown = await res.json()
 
-    console.log(`Статус: ${data.ok ? 'работает' : 'проблема'}`)
-    console.log(`Время:  ${data.timestamp ?? 'unknown'}`)
+    if (!isHealthResponse(raw)) {
+      console.log('(неожиданный формат ответа)')
+      return
+    }
 
-    if (data.integrations) {
+    console.log(`Статус: ${raw.ok ? 'работает' : 'проблема'}`)
+    console.log(`Время:  ${raw.timestamp ?? 'unknown'}`)
+
+    if (Array.isArray(raw.integrations)) {
       console.log('\nИнтеграции:')
-      for (const integration of data.integrations) {
-        console.log(`  ${integration.name}: ${integration.status}`)
+      for (const item of raw.integrations) {
+        if (isHealthIntegration(item)) {
+          console.log(`  ${item.name}: ${item.status}`)
+        }
       }
     }
 
-    if (data.config) {
+    if (isRecord(raw.config)) {
       console.log('\nКонфигурация:')
-      for (const [key, value] of Object.entries(data.config)) {
+      for (const [key, value] of Object.entries(raw.config)) {
         console.log(`  ${key}: ${String(value)}`)
       }
     }

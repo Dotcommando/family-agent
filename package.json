@@ -17,7 +17,8 @@
     "cli": "node --enable-source-maps dist/cli.js"
   },
   "dependencies": {
-    "@lancedb/lancedb": "0.18.2"
+    "@lancedb/lancedb": "0.18.2",
+    "telegram": "^2.26.16"
   },
   "devDependencies": {
     "@types/node": "24.12.0",

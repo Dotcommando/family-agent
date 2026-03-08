@@ -3,13 +3,14 @@ import type { IRuntimeContext } from './types.js'
 import { loadMemoryContext } from '../memory/memory-loader.js'
 import { runReasoning, runThoughtLoop, runSummarization } from './reasoning.js'
 import { parseMilestones, findSummarizationCandidates, readRunContents, writeSummary, cleanupOldRuns } from '../memory/summarization.js'
+import { ChannelKind } from '../channels/types.js'
 import { EventSource, JobStatus } from '../queue/types.js'
 import type { ICoalescedBatch, IJob } from '../queue/types.js'
 
-const SOURCE_TO_CHANNEL: Record<string, string> = {
-  [EventSource.Telegram]: 'telegram',
-  [EventSource.Terminal]: 'terminal',
-}
+const SOURCE_TO_CHANNEL_KIND: ReadonlyMap<EventSource, ChannelKind> = new Map([
+  [EventSource.Telegram, ChannelKind.Telegram],
+  [EventSource.Terminal, ChannelKind.Terminal],
+])
 
 export class Orchestrator {
   private readonly ctx: IRuntimeContext
@@ -20,6 +21,7 @@ export class Orchestrator {
   private lastThoughtLoopId: string | undefined
   private lastSummaryId: string | undefined
   private lastJobFinishedAt = 0
+  private summaryPending = false
 
   constructor(ctx: IRuntimeContext) {
     this.ctx = ctx
@@ -75,6 +77,11 @@ export class Orchestrator {
       return
     }
 
+    if (this.summaryPending) {
+      await this.executeDeferredSummary()
+      this.summaryPending = false
+    }
+
     const pendingCount = this.ctx.eventQueue.pendingCount()
     if (pendingCount === 0) {
       return
@@ -105,11 +112,14 @@ export class Orchestrator {
         break
       }
 
+      const batchPriority = Math.min(...batch.events.map((e) => e.priority))
+      const batchSource = batch.events[0]?.source ?? EventSource.Internal
+
       const job: IJob = {
         id: randomUUID().slice(0, 8),
         status: JobStatus.Processing,
-        priority: Math.min(...batch.events.map((e) => e.priority)),
-        source: batch.events[0]?.source ?? EventSource.Internal,
+        priority: batchPriority,
+        source: batchSource,
         events: batch.events,
         createdAt: new Date().toISOString(),
         startedAt: new Date().toISOString(),
@@ -152,7 +162,7 @@ export class Orchestrator {
       return
     }
 
-    const channelKind = SOURCE_TO_CHANNEL[source]
+    const channelKind = SOURCE_TO_CHANNEL_KIND.get(source)
     if (!channelKind) {
       return
     }
@@ -194,6 +204,7 @@ export class Orchestrator {
 
     if (this.currentJobId) {
       console.log('[loop-3:reflection] skipping — job in progress')
+      this.scheduleSummaryAfterCurrentJob()
       return
     }
 
@@ -222,6 +233,19 @@ export class Orchestrator {
       console.log('[loop-3:reflection] proactive mode disabled, skipping LLM reflection')
     }
 
+    await this.tickSummarization()
+  }
+
+  private scheduleSummaryAfterCurrentJob(): void {
+    if (this.summaryPending) {
+      return
+    }
+    this.summaryPending = true
+    console.log('[summarization] deferred — will run after current job completes')
+  }
+
+  private async executeDeferredSummary(): Promise<void> {
+    console.log('[summarization] executing deferred summary job')
     await this.tickSummarization()
   }
 
