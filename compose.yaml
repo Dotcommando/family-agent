@@ -1,0 +1,35 @@
+services:
+  ollama:
+    image: docker.io/ollama/ollama:rocm
+    container_name: family-agent-ollama
+    ports:
+      - "11434:11434"
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    security_opt:
+      - label=disable
+    volumes:
+      - ollama-data:/root/.ollama
+    restart: unless-stopped
+
+  agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: family-agent-app
+    depends_on:
+      - ollama
+    env_file:
+      - .env
+    volumes:
+      - ./memory:/app/memory
+      - ./data/lancedb:/app/data/lancedb
+      - ./runtime-secrets:/run/secrets:ro
+      - ./state:/app/state
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+
+volumes:
+  ollama-data:
