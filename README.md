@@ -1,6 +1,6 @@
 # family-agent
 
-Persistent семейный ассистент с тремя контурами: событийный, исполнитель очереди, фоновая рефлексия.
+Persistent семейный ассистент с тремя контурами: событийный, исполнитель очереди, фоновая рефлексия. Саммаризация памяти работает независимо от thought loop.
 
 ## Стек
 
@@ -283,6 +283,17 @@ AGENT_URL=http://192.168.1.100:3000 famagent --status
 
 Пример: канал публикует "OpenAI released a new model today" — агент проанализирует это как новость, может учесть в планировании, но не отправит ответ.
 
+### Структурированные метаданные Telegram
+
+Каждое Telegram-событие несёт структурированные метаданные в поле `telegramMeta` на `IAgentEvent`:
+
+| Поле | Тип | Описание |
+|---|---|---|
+| `senderId` | `string` | Числовой ID отправителя |
+| `chatKind` | `TelegramChatKindEvent` | Тип чата (private/group/supergroup/channel/unknown) |
+| `isMention` | `boolean` | Упомянут ли агент через @username |
+| `isReplyToSelf` | `boolean` | Является ли reply на сообщение агента |
+
 ### Whitelist (разрешения)
 
 Простая модель доступа через `.env`:
@@ -311,10 +322,16 @@ TELEGRAM_REQUIRE_MENTION_IN_GROUPS=true
 - Множитель: ×2 на каждую попытку
 - Максимальная задержка: 5 минут
 - После успешного reconnect — счётчик сбрасывается
+- При reconnect создаётся новый клиент, заново подключаются event handlers и send function
+- Периодическая проверка `client.connected` каждые 30 секунд детектирует тихие отключения
 - Все попытки логируются
 - `integration status` корректно отражает текущее состояние (`connecting` во время reconnect)
 
 Нет "тихой смерти" — если соединение пропало, это видно в логах и статусе.
+
+### Отправка сообщений
+
+`sendMessage()` использует числовой `entity` (через `Number(chatId)`) вместо строки. Это обеспечивает корректную работу gram.js, который ожидает числовой peer ID для отправки.
 
 ### Обработка сообщений без text
 
@@ -431,7 +448,7 @@ cp -R runtime-secrets.example runtime-secrets
 
 ## Принципы архитектуры
 
-### Три контура
+### Три контура + независимая саммаризация
 
 #### 1. Событийный контур
 
@@ -441,9 +458,50 @@ cp -R runtime-secrets.example runtime-secrets
 
 В каждый момент времени активна только одна reasoning job. Пока она работает, новые события продолжают складываться в очередь. Пользовательские события имеют приоритет над фоновыми.
 
+После завершения каждой job оркестратор проверяет, есть ли готовая задача на саммаризацию, и выполняет её до перехода к следующим внешним событиям.
+
 #### 3. Фоновая рефлексия
 
 Thought loop запускается по таймеру (`AGENT_THOUGHT_LOOP_SECONDS`, по умолчанию 240с). Если в очереди есть пользовательские события или активна job — рефлексия пропускается.
+
+Thought loop НЕ запускает саммаризацию — саммаризация работает независимо.
+
+#### 4. Саммаризация памяти (независимый планировщик)
+
+Саммаризация работает отдельно от thought loop:
+
+- Запускается по собственному таймеру (с тем же интервалом, что thought loop)
+- Запускается после завершения каждой job (до обработки следующих событий)
+- Не запускается, если уже идёт другая саммаризация или reasoning job
+- За один тик обрабатывает **одну** задачу
+
+**Алгоритм выбора задачи (`findNextSummaryTask`)**:
+
+1. Milestones сортируются от наименьшего к наибольшему: `1h → 3h → 6h → 24h → ...`
+2. Для каждого milestone вычисляется текущий period: `periodEnd = floor(now / milestone.seconds) * milestone.seconds`, `periodStart = periodEnd - milestone.seconds`
+3. Если для этого periodEnd уже есть summary (проверяется по `.meta.json`) — пропускаем
+4. Для bottom-level (самый маленький milestone): ищем run-файлы с `finishedAt` в `[periodStart, periodEnd)`. Если нет подходящих — **STOP** (не проверяем более крупные milestones)
+5. Для upper-level: `sourceCount = ceil(target.seconds / previous.seconds)`. Берём последние `sourceCount` summaries из предыдущего milestone, у которых `meta.periodEnd <= targetEnd`. Если их меньше, чем `sourceCount` — **STOP**
+
+**Ключевой принцип**: если текущий milestone не готов (недостаточно входных данных) — алгоритм останавливается. Нет смысла проверять более крупные milestones, если мелкие ещё не заполнены.
+
+**JSON sidecar (`.meta.json`)**:
+
+Каждый summary-файл сопровождается `.meta.json` с метаданными:
+
+```json
+{
+  "milestone": "3h",
+  "periodStart": "2026-03-08T15:00:00.000Z",
+  "periodEnd": "2026-03-08T18:00:00.000Z",
+  "createdAt": "2026-03-08T18:00:01.234Z",
+  "sourceMilestone": "1h",
+  "sourceCount": 3,
+  "sourceRefs": ["2026-03-08T15-00-01-234Z.md", "2026-03-08T16-00-01-234Z.md", "2026-03-08T17-00-01-234Z.md"]
+}
+```
+
+Отбор source summaries для upper-level происходит по `meta.periodEnd`, а не по имени файла или дате создания.
 
 ### Коалесинг событий
 
@@ -469,6 +527,8 @@ memory/
 ├── runs/                        — резюме каждого reasoning-цикла
 ├── summaries/
 │   ├── 1h/                      — саммари за последний час
+│   │   ├── 2026-03-08T15-00-01-234Z.md
+│   │   └── 2026-03-08T15-00-01-234Z.meta.json
 │   ├── 3h/
 │   ├── 6h/
 │   ├── 24h/
@@ -521,7 +581,7 @@ state/
 | `AGENT_QUEUE_DIR` | `/app/state/queue` | Путь к очереди |
 | `AGENT_EVENT_POLL_SECONDS` | `10` | Интервал поллинга очереди |
 | `AGENT_IDLE_BACKOFF_SECONDS` | `30` | Backoff при пустой очереди |
-| `AGENT_THOUGHT_LOOP_SECONDS` | `240` | Интервал фоновой рефлексии |
+| `AGENT_THOUGHT_LOOP_SECONDS` | `240` | Интервал фоновой рефлексии и проверки саммаризации |
 | `AGENT_MAX_CONCURRENT_JOBS` | `1` | Макс. параллельных jobs |
 | `AGENT_PROACTIVE_MODE` | `true` | Включена ли фоновая рефлексия |
 | `AGENT_COALESCE_WINDOW_SECONDS` | `45` | Окно коалесинга |
@@ -530,12 +590,8 @@ state/
 | `AGENT_EVENT_QUEUE_STRATEGY` | `priority-fifo` | Стратегия очереди |
 | `AGENT_THOUGHT_LOOP_SKIP_WHEN_QUEUE_NOT_EMPTY` | `true` | Пропускать рефлексию при наличии событий |
 | `AGENT_DEDUP_THOUGHT_LOOP` | `true` | Дедупликация thought loop |
-| `AGENT_DEDUP_SUMMARY_JOBS` | `true` | Дедупликация саммаризации |
 | `AGENT_SUMMARIZATION_MILESTONES` | `1h,3h,...,365d` | Горизонты саммаризации |
 | `AGENT_SUMMARIZATION_MAX_INPUT_ITEMS` | `200` | Макс. файлов на вход саммаризации |
-| `AGENT_SUMMARY_RUN_ONLY_WHEN_IDLE` | `true` | Саммаризация только в idle |
-| `AGENT_SUMMARY_MIN_IDLE_SECONDS` | `60` | Мин. idle перед саммаризацией |
-| `AGENT_SUMMARY_MAX_CONCURRENT` | `1` | Макс. параллельных саммаризаций |
 | `AGENT_SUMMARY_RAW_RETENTION_DAYS` | `14` | Сколько дней хранить сырые run-файлы |
 | `TELEGRAM_ALLOWED_CHATS` | (пусто) | Whitelist chat id через запятую |
 | `TELEGRAM_ALLOWED_USERS` | (пусто) | Whitelist user id через запятую |

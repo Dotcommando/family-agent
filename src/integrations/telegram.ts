@@ -4,7 +4,8 @@ import { TelegramChatKind } from './telegram-types.js'
 import type { IAppSecrets } from '../config/types.js'
 import type { IEnvConfig } from '../config/env.js'
 import type { EventBus } from '../queue/event-bus.js'
-import { EventSource, EventPriority } from '../queue/types.js'
+import { EventSource, EventPriority, TelegramChatKindEvent } from '../queue/types.js'
+import type { ITelegramMeta } from '../queue/types.js'
 import { TelegramAdapter } from '../channels/telegram-adapter.js'
 
 const RECONNECT_BASE_MS = 5_000
@@ -18,6 +19,16 @@ interface ITelegramModules {
   NewMessage: typeof import('telegram/events').NewMessage
 }
 
+function chatKindToEventKind(kind: TelegramChatKind): TelegramChatKindEvent {
+  switch (kind) {
+    case TelegramChatKind.Private: return TelegramChatKindEvent.Private
+    case TelegramChatKind.Group: return TelegramChatKindEvent.Group
+    case TelegramChatKind.Supergroup: return TelegramChatKindEvent.Supergroup
+    case TelegramChatKind.Channel: return TelegramChatKindEvent.Channel
+    case TelegramChatKind.Unknown: return TelegramChatKindEvent.Unknown
+  }
+}
+
 export class TelegramIntegration implements IIntegration {
   readonly name = 'telegram'
   readonly adapter = new TelegramAdapter()
@@ -25,7 +36,8 @@ export class TelegramIntegration implements IIntegration {
   private readonly secrets: IAppSecrets
   private readonly config: IEnvConfig
   private readonly eventBus: EventBus
-  private disconnectFn: (() => Promise<void>) | undefined
+  private client: InstanceType<ITelegramModules['TelegramClient']> | undefined
+  private tgModules: ITelegramModules | undefined
   private selfUsername: string | undefined
   private selfId: string | undefined
   private sentMessageIds = new Set<number>()
@@ -70,14 +82,14 @@ export class TelegramIntegration implements IIntegration {
       this.reconnectTimer = undefined
     }
 
-    if (this.disconnectFn) {
+    if (this.client) {
       try {
-        await this.disconnectFn()
+        await this.client.disconnect()
       } catch (err: unknown) {
         const errMsg = err instanceof Error ? err.message : String(err)
         console.error(`[telegram] error during disconnect: ${errMsg}`)
       }
-      this.disconnectFn = undefined
+      this.client = undefined
     }
     this.currentStatus = IntegrationStatus.NotConfigured
     console.log('[telegram] stopped')
@@ -95,6 +107,7 @@ export class TelegramIntegration implements IIntegration {
 
     try {
       const tg = await this.loadModules()
+      this.tgModules = tg
 
       const session = new tg.sessions.StringSession(this.secrets.telegramSession)
       const client = new tg.TelegramClient(session, apiId, this.secrets.telegramApiHash, {
@@ -103,14 +116,12 @@ export class TelegramIntegration implements IIntegration {
 
       await client.connect()
       this.reconnectAttempt = 0
-
-      this.disconnectFn = async () => {
-        await client.disconnect()
-      }
+      this.client = client
 
       await this.fetchSelfInfo(client)
       this.wireSendFn(client)
       this.wireEventHandler(client, tg)
+      this.wireDisconnectDetection(client, apiId)
 
       this.currentStatus = IntegrationStatus.Connected
       console.log('[telegram] MTProto client connected and listening for messages')
@@ -138,8 +149,43 @@ export class TelegramIntegration implements IIntegration {
 
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = undefined
-      void this.connect(apiId)
+      void this.reconnect(apiId)
     }, delayMs)
+  }
+
+  private async reconnect(apiId: number): Promise<void> {
+    if (this.client) {
+      try {
+        await this.client.disconnect()
+      } catch {
+        // ignore cleanup errors
+      }
+      this.client = undefined
+    }
+
+    await this.connect(apiId)
+  }
+
+  private wireDisconnectDetection(
+    client: InstanceType<ITelegramModules['TelegramClient']>,
+    apiId: number,
+  ): void {
+    const checkInterval = setInterval(() => {
+      if (this.stopped) {
+        clearInterval(checkInterval)
+        return
+      }
+      if (client !== this.client) {
+        clearInterval(checkInterval)
+        return
+      }
+      if (!client.connected) {
+        console.log('[telegram] runtime disconnect detected — scheduling reconnect')
+        this.currentStatus = IntegrationStatus.Error
+        clearInterval(checkInterval)
+        this.scheduleReconnect(apiId)
+      }
+    }, 30_000)
   }
 
   private async fetchSelfInfo(client: InstanceType<ITelegramModules['TelegramClient']>): Promise<void> {
@@ -163,17 +209,25 @@ export class TelegramIntegration implements IIntegration {
 
   private wireSendFn(client: InstanceType<ITelegramModules['TelegramClient']>): void {
     this.adapter.setSendFn(async (chatId: string, text: string) => {
-      const result = await client.sendMessage(chatId, { message: text })
-      if (result && typeof result.id === 'number') {
-        this.sentMessageIds.add(result.id)
-        if (this.sentMessageIds.size > 500) {
-          const oldest = this.sentMessageIds.values().next()
-          if (!oldest.done) {
-            this.sentMessageIds.delete(oldest.value)
+      const numericId = Number(chatId)
+      const entity = Number.isFinite(numericId) ? numericId : chatId
+
+      try {
+        const result = await client.sendMessage(entity, { message: text })
+        if (result && typeof result.id === 'number') {
+          this.sentMessageIds.add(result.id)
+          if (this.sentMessageIds.size > 500) {
+            const oldest = this.sentMessageIds.values().next()
+            if (!oldest.done) {
+              this.sentMessageIds.delete(oldest.value)
+            }
           }
         }
+        console.log(`[telegram] sent response to chat ${chatId} (${text.length} chars)`)
+      } catch (err: unknown) {
+        const errMsg = err instanceof Error ? err.message : String(err)
+        console.error(`[telegram] failed to send message to chat ${chatId}: ${errMsg}`)
       }
-      console.log(`[telegram] sent response to chat ${chatId} (${text.length} chars)`)
     })
   }
 
@@ -184,6 +238,14 @@ export class TelegramIntegration implements IIntegration {
     client.addEventHandler((event) => {
       const message = event.message
       if (!message) {
+        return
+      }
+
+      if (this.selfId && message.senderId !== undefined && String(message.senderId) === this.selfId) {
+        return
+      }
+
+      if (message.id !== undefined && this.sentMessageIds.has(message.id)) {
         return
       }
 
@@ -206,8 +268,17 @@ export class TelegramIntegration implements IIntegration {
         return
       }
 
+      const isMentioned = this.checkMention(content)
+      const isReplyToSelf = this.checkReplyToSelf(message)
+
       if (chatKind === TelegramChatKind.Channel) {
         console.log(`[telegram] channel post chat=${chatId} — observation event, no response will be sent`)
+        const meta: ITelegramMeta = {
+          senderId,
+          chatKind: chatKindToEventKind(chatKind),
+          isMention: false,
+          isReplyToSelf: false,
+        }
         this.eventBus.emit({
           source: EventSource.TelegramChannel,
           priority: EventPriority.Background,
@@ -215,6 +286,7 @@ export class TelegramIntegration implements IIntegration {
           payload: content,
           batchable: true,
           requiresResponse: false,
+          telegramMeta: meta,
         })
         return
       }
@@ -223,9 +295,6 @@ export class TelegramIntegration implements IIntegration {
         (chatKind === TelegramChatKind.Group || chatKind === TelegramChatKind.Supergroup) &&
         this.config.telegramRequireMentionInGroups
       ) {
-        const isMentioned = this.checkMention(content)
-        const isReplyToSelf = this.checkReplyToSelf(message)
-
         if (!isMentioned && !isReplyToSelf) {
           console.log(`[telegram] group message skipped — no mention/reply (chat=${chatId})`)
           return
@@ -233,6 +302,12 @@ export class TelegramIntegration implements IIntegration {
         console.log(`[telegram] group message accepted — mention=${isMentioned} replyToSelf=${isReplyToSelf}`)
       }
 
+      const meta: ITelegramMeta = {
+        senderId,
+        chatKind: chatKindToEventKind(chatKind),
+        isMention: isMentioned,
+        isReplyToSelf,
+      }
       this.eventBus.emit({
         source: EventSource.Telegram,
         priority: EventPriority.User,
@@ -240,6 +315,7 @@ export class TelegramIntegration implements IIntegration {
         payload: content,
         batchable: true,
         requiresResponse: true,
+        telegramMeta: meta,
       })
     }, new tg.NewMessage({}))
   }

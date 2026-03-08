@@ -18,12 +18,8 @@ export interface IEnvConfig {
   eventQueueStrategy: string
   thoughtLoopSkipWhenQueueNotEmpty: boolean
   dedupThoughtLoop: boolean
-  dedupSummaryJobs: boolean
   summarizationMilestones: string[]
   summarizationMaxInputItems: number
-  summaryRunOnlyWhenIdle: boolean
-  summaryMinIdleSeconds: number
-  summaryMaxConcurrent: number
   summaryRawRetentionDays: number
   purposeDir: string
   policiesDir: string
@@ -95,12 +91,8 @@ export function readEnvConfig(): IEnvConfig {
     eventQueueStrategy: process.env.AGENT_EVENT_QUEUE_STRATEGY ?? 'priority-fifo',
     thoughtLoopSkipWhenQueueNotEmpty: readBooleanEnv('AGENT_THOUGHT_LOOP_SKIP_WHEN_QUEUE_NOT_EMPTY', true),
     dedupThoughtLoop: readBooleanEnv('AGENT_DEDUP_THOUGHT_LOOP', true),
-    dedupSummaryJobs: readBooleanEnv('AGENT_DEDUP_SUMMARY_JOBS', true),
     summarizationMilestones: readListEnv('AGENT_SUMMARIZATION_MILESTONES', ['1h', '3h', '6h', '24h', '7d', '30d', '90d', '180d', '365d']),
     summarizationMaxInputItems: readNumberEnv('AGENT_SUMMARIZATION_MAX_INPUT_ITEMS', 200),
-    summaryRunOnlyWhenIdle: readBooleanEnv('AGENT_SUMMARY_RUN_ONLY_WHEN_IDLE', true),
-    summaryMinIdleSeconds: readNumberEnv('AGENT_SUMMARY_MIN_IDLE_SECONDS', 60),
-    summaryMaxConcurrent: readNumberEnv('AGENT_SUMMARY_MAX_CONCURRENT', 1),
     summaryRawRetentionDays: readNumberEnv('AGENT_SUMMARY_RAW_RETENTION_DAYS', 14),
     purposeDir: process.env.PURPOSE_DIR ?? '/app/state/purpose',
     policiesDir: process.env.POLICIES_DIR ?? '/app/state/policies',

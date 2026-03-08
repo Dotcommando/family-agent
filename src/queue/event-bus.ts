@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { EventPriority, EventSource } from './types.js'
-import type { IAgentEvent } from './types.js'
+import type { IAgentEvent, ITelegramMeta } from './types.js'
 
 type EventHandler = (event: IAgentEvent) => void
 
@@ -18,6 +18,7 @@ export class EventBus {
     payload: string
     batchable?: boolean
     requiresResponse?: boolean
+    telegramMeta?: ITelegramMeta
   }): IAgentEvent {
     const event: IAgentEvent = {
       id: randomUUID(),
@@ -28,6 +29,7 @@ export class EventBus {
       createdAt: new Date().toISOString(),
       batchable: partial.batchable ?? true,
       requiresResponse: partial.requiresResponse ?? true,
+      telegramMeta: partial.telegramMeta,
     }
 
     for (const handler of this.handlers) {

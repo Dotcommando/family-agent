@@ -28,7 +28,16 @@ function buildBatchPrompt(batch: ICoalescedBatch): string {
   if (observation) {
     lines.push(`[OBSERVATION] The following was received from an external channel (no response required):`)
     lines.push('')
-    lines.push(batch.latestPayload)
+    if (batch.messageCount > 1) {
+      for (let i = 0; i < batch.events.length; i++) {
+        const event = batch.events[i]
+        if (event) {
+          lines.push(`[${i + 1}/${batch.messageCount}] (${event.createdAt}) ${event.payload}`)
+        }
+      }
+    } else {
+      lines.push(batch.latestPayload)
+    }
     lines.push('')
     lines.push('This is an observation event. Analyze the content, consider if it affects your plans,')
     lines.push('and include any relevant insights in your notes. Do NOT produce a reply message.')

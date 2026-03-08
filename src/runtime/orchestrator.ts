@@ -2,10 +2,11 @@ import { randomUUID } from 'node:crypto'
 import type { IRuntimeContext } from './types.js'
 import { loadMemoryContext } from '../memory/memory-loader.js'
 import { runReasoning, runThoughtLoop, runSummarization } from './reasoning.js'
-import { parseMilestones, findSummarizationCandidates, readRunContents, writeSummary, cleanupOldRuns } from '../memory/summarization.js'
+import { parseMilestones, findNextSummaryTask, readInputContents, writeSummary, cleanupOldRuns } from '../memory/summarization.js'
 import { ChannelKind } from '../channels/types.js'
 import { EventSource, JobStatus } from '../queue/types.js'
 import type { ICoalescedBatch, IJob } from '../queue/types.js'
+import type { IMilestoneSpec } from '../memory/types.js'
 
 const SOURCE_TO_CHANNEL_KIND: ReadonlyMap<EventSource, ChannelKind> = new Map([
   [EventSource.Telegram, ChannelKind.Telegram],
@@ -19,10 +20,11 @@ export class Orchestrator {
   private currentJobId: string | undefined
   private eventPollTimer: ReturnType<typeof setInterval> | undefined
   private thoughtLoopTimer: ReturnType<typeof setInterval> | undefined
+  private summaryTimer: ReturnType<typeof setInterval> | undefined
   private lastThoughtLoopId: string | undefined
-  private lastSummaryId: string | undefined
   private lastJobFinishedAt = 0
-  private summaryPending = false
+  private summaryRunning = false
+  private milestones: ReadonlyArray<IMilestoneSpec> = []
 
   constructor(ctx: IRuntimeContext) {
     this.ctx = ctx
@@ -32,12 +34,15 @@ export class Orchestrator {
     this.running = true
     console.log('[orchestrator] starting three-loop architecture')
 
+    this.milestones = parseMilestones(this.ctx.config.summarizationMilestones)
+
     this.ctx.eventBus.on((event) => {
       this.ctx.eventQueue.enqueue(event)
     })
 
     this.startEventPollLoop()
     this.startThoughtLoop()
+    this.startSummaryScheduler()
 
     console.log('[orchestrator] all loops active')
   }
@@ -53,6 +58,11 @@ export class Orchestrator {
     if (this.thoughtLoopTimer) {
       clearInterval(this.thoughtLoopTimer)
       this.thoughtLoopTimer = undefined
+    }
+
+    if (this.summaryTimer) {
+      clearInterval(this.summaryTimer)
+      this.summaryTimer = undefined
     }
 
     console.log('[orchestrator] stopped')
@@ -76,11 +86,6 @@ export class Orchestrator {
 
     if (this.currentJobId) {
       return
-    }
-
-    if (this.summaryPending) {
-      await this.executeDeferredSummary()
-      this.summaryPending = false
     }
 
     const pendingCount = this.ctx.eventQueue.pendingCount()
@@ -158,6 +163,8 @@ export class Orchestrator {
 
       this.currentJobId = undefined
       this.lastJobFinishedAt = Date.now()
+
+      await this.runSummaryIfIdle()
     }
   }
 
@@ -186,7 +193,7 @@ export class Orchestrator {
     }
   }
 
-  // --- Loop 3: Thought loop + summarization ---
+  // --- Loop 3: Thought loop (reflection only, no summarization) ---
 
   private startThoughtLoop(): void {
     const intervalMs = this.ctx.config.thoughtLoopSeconds * 1000
@@ -209,7 +216,6 @@ export class Orchestrator {
 
     if (this.currentJobId) {
       console.log('[loop-3:reflection] skipping — job in progress')
-      this.scheduleSummaryAfterCurrentJob()
       return
     }
 
@@ -237,54 +243,53 @@ export class Orchestrator {
     } else {
       console.log('[loop-3:reflection] proactive mode disabled, skipping LLM reflection')
     }
-
-    await this.tickSummarization()
   }
 
-  private scheduleSummaryAfterCurrentJob(): void {
-    if (this.summaryPending) {
+  // --- Independent summary scheduler ---
+
+  private startSummaryScheduler(): void {
+    const intervalMs = this.ctx.config.thoughtLoopSeconds * 1000
+    console.log(`[summary-scheduler] summary check every ${this.ctx.config.thoughtLoopSeconds}s`)
+
+    this.summaryTimer = setInterval(() => {
+      void this.runSummaryIfIdle()
+    }, intervalMs)
+  }
+
+  private async runSummaryIfIdle(): Promise<void> {
+    if (!this.running) {
       return
     }
-    this.summaryPending = true
-    console.log('[summarization] deferred — will run after current job completes')
-  }
 
-  private async executeDeferredSummary(): Promise<void> {
-    console.log('[summarization] executing deferred summary job')
-    await this.tickSummarization()
+    if (this.summaryRunning) {
+      return
+    }
+
+    if (this.currentJobId) {
+      return
+    }
+
+    this.summaryRunning = true
+    try {
+      await this.tickSummarization()
+    } finally {
+      this.summaryRunning = false
+    }
   }
 
   private async tickSummarization(): Promise<void> {
-    const idleSeconds = (Date.now() - this.lastJobFinishedAt) / 1000
-    if (this.ctx.config.summaryRunOnlyWhenIdle && idleSeconds < this.ctx.config.summaryMinIdleSeconds && this.lastJobFinishedAt > 0) {
-      console.log(`[summarization] skipping — not idle long enough (${Math.round(idleSeconds)}s < ${this.ctx.config.summaryMinIdleSeconds}s)`)
+    const task = findNextSummaryTask(this.ctx.config, this.milestones)
+
+    if (!task) {
       return
     }
 
-    const milestones = parseMilestones(this.ctx.config.summarizationMilestones)
-    const candidates = findSummarizationCandidates(this.ctx.config, milestones)
+    console.log(`[summarization] processing ${task.milestone.label}: ${task.inputFiles.length} files from ${task.sourceMilestone} [${task.periodStart} .. ${task.periodEnd}]`)
 
-    if (candidates.length === 0) {
-      console.log('[summarization] no candidates for summarization')
-      return
-    }
-
-    if (this.ctx.config.dedupSummaryJobs && this.lastSummaryId) {
-      console.log('[summarization] dedup — skipping redundant summary run')
-      this.lastSummaryId = undefined
-      return
-    }
-
-    const summaryId = randomUUID().slice(0, 8)
-    this.lastSummaryId = summaryId
-
-    for (const candidate of candidates.slice(0, this.ctx.config.summaryMaxConcurrent)) {
-      console.log(`[summarization] processing ${candidate.milestone.label} with ${candidate.inputFiles.length} input files`)
-      const rawContent = readRunContents(this.ctx.config, candidate.inputFiles)
-      const summary = await runSummarization(this.ctx.config, candidate.milestone.label, rawContent)
-      if (summary) {
-        writeSummary(this.ctx.config, candidate.milestone.label, summary)
-      }
+    const rawContent = readInputContents(task.inputDir, task.inputFiles)
+    const summary = await runSummarization(this.ctx.config, task.milestone.label, rawContent)
+    if (summary) {
+      writeSummary(this.ctx.config, task, summary)
     }
 
     cleanupOldRuns(this.ctx.config)

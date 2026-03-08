@@ -24,6 +24,21 @@ export enum JobStatus {
   Failed = 'failed',
 }
 
+export enum TelegramChatKindEvent {
+  Private = 'private',
+  Group = 'group',
+  Supergroup = 'supergroup',
+  Channel = 'channel',
+  Unknown = 'unknown',
+}
+
+export interface ITelegramMeta {
+  senderId: string
+  chatKind: TelegramChatKindEvent
+  isMention: boolean
+  isReplyToSelf: boolean
+}
+
 export interface IAgentEvent {
   id: string
   source: EventSource
@@ -33,6 +48,7 @@ export interface IAgentEvent {
   createdAt: string
   batchable: boolean
   requiresResponse: boolean
+  telegramMeta: ITelegramMeta | undefined
 }
 
 export interface ICoalescedBatch {
