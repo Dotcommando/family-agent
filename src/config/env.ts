@@ -26,7 +26,11 @@ export interface IEnvConfig {
   summaryMaxConcurrent: number
   summaryRawRetentionDays: number
   purposeDir: string
+  policiesDir: string
   terminalChatDir: string
+  telegramAllowedChats: string[]
+  telegramAllowedUsers: string[]
+  telegramRequireMentionInGroups: boolean
 }
 
 function readNumberEnv(name: string, fallback: number): number {
@@ -99,6 +103,10 @@ export function readEnvConfig(): IEnvConfig {
     summaryMaxConcurrent: readNumberEnv('AGENT_SUMMARY_MAX_CONCURRENT', 1),
     summaryRawRetentionDays: readNumberEnv('AGENT_SUMMARY_RAW_RETENTION_DAYS', 14),
     purposeDir: process.env.PURPOSE_DIR ?? '/app/state/purpose',
+    policiesDir: process.env.POLICIES_DIR ?? '/app/state/policies',
     terminalChatDir: process.env.TERMINAL_CHAT_DIR ?? '/app/state/terminal-chat',
+    telegramAllowedChats: readListEnv('TELEGRAM_ALLOWED_CHATS', []),
+    telegramAllowedUsers: readListEnv('TELEGRAM_ALLOWED_USERS', []),
+    telegramRequireMentionInGroups: readBooleanEnv('TELEGRAM_REQUIRE_MENTION_IN_GROUPS', true),
   }
 }

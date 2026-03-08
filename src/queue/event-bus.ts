@@ -17,6 +17,7 @@ export class EventBus {
     chatId?: string
     payload: string
     batchable?: boolean
+    requiresResponse?: boolean
   }): IAgentEvent {
     const event: IAgentEvent = {
       id: randomUUID(),
@@ -26,6 +27,7 @@ export class EventBus {
       payload: partial.payload,
       createdAt: new Date().toISOString(),
       batchable: partial.batchable ?? true,
+      requiresResponse: partial.requiresResponse ?? true,
     }
 
     for (const handler of this.handlers) {

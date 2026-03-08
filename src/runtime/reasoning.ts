@@ -1,18 +1,38 @@
 import { randomUUID } from 'node:crypto'
+import { EventSource } from '../queue/types.js'
 import type { ICoalescedBatch } from '../queue/types.js'
 import type { IEnvConfig } from '../config/env.js'
 import type { IMemoryContext } from '../memory/types.js'
 import { buildPromptContext } from '../memory/memory-loader.js'
+import { loadPolicy } from '../memory/policy-loader.js'
 import { writeRunHandoff } from '../memory/memory-writer.js'
 import { ollamaChat, ollamaHealthCheck } from '../lib/ollama.js'
 import type { IChatMessage } from '../lib/ollama.js'
 
 const DEFAULT_CONTEXT_TOKEN_BUDGET = 4096
 
+const SOURCE_TO_POLICY_NAME: ReadonlyMap<EventSource, string> = new Map([
+  [EventSource.Telegram, 'telegram'],
+  [EventSource.TelegramChannel, 'telegram'],
+  [EventSource.Terminal, 'terminal'],
+])
+
+function isObservationBatch(batch: ICoalescedBatch): boolean {
+  return !batch.requiresResponse
+}
+
 function buildBatchPrompt(batch: ICoalescedBatch): string {
   const lines: string[] = []
+  const observation = isObservationBatch(batch)
 
-  if (batch.messageCount === 1) {
+  if (observation) {
+    lines.push(`[OBSERVATION] The following was received from an external channel (no response required):`)
+    lines.push('')
+    lines.push(batch.latestPayload)
+    lines.push('')
+    lines.push('This is an observation event. Analyze the content, consider if it affects your plans,')
+    lines.push('and include any relevant insights in your notes. Do NOT produce a reply message.')
+  } else if (batch.messageCount === 1) {
     lines.push(`A message arrived from chat ${batch.chatId}:`)
     lines.push('')
     lines.push(batch.latestPayload)
@@ -35,8 +55,11 @@ function buildBatchPrompt(batch: ICoalescedBatch): string {
     lines.push('If messages contradict each other, follow the latest one.')
   }
 
-  lines.push('')
-  lines.push('Respond concisely. State what you will do and any notes for your next iteration.')
+  if (!observation) {
+    lines.push('')
+    lines.push('Respond concisely. State what you will do and any notes for your next iteration.')
+  }
+
   return lines.join('\n')
 }
 
@@ -49,7 +72,7 @@ export async function runReasoning(
   const startedAt = new Date().toISOString()
 
   console.log(`[reasoning] === start run ${runId} ===`)
-  console.log(`[reasoning] chat=${batch.chatId} events=${batch.messageCount} window=${batch.firstAt}..${batch.lastAt}`)
+  console.log(`[reasoning] chat=${batch.chatId} events=${batch.messageCount} window=${batch.firstAt}..${batch.lastAt} requiresResponse=${batch.requiresResponse}`)
 
   const ollamaOk = await ollamaHealthCheck(config)
   if (!ollamaOk) {
@@ -70,15 +93,28 @@ export async function runReasoning(
 
   const promptContext = buildPromptContext(memory, DEFAULT_CONTEXT_TOKEN_BUDGET)
 
+  const batchSource = batch.events[0]?.source
+  const policyName = batchSource ? SOURCE_TO_POLICY_NAME.get(batchSource) : undefined
+  const policy = policyName ? loadPolicy(config, policyName) : ''
+
+  const systemParts: string[] = [
+    'You are a persistent family assistant.',
+    'Below is your memory context. Use it to understand ongoing plans and history.',
+    '',
+    promptContext,
+  ]
+
+  if (policy) {
+    systemParts.push('')
+    systemParts.push('## Channel policy')
+    systemParts.push('')
+    systemParts.push(policy)
+  }
+
   const messages: IChatMessage[] = [
     {
       role: 'system',
-      content: [
-        'You are a persistent family assistant.',
-        'Below is your memory context. Use it to understand ongoing plans and history.',
-        '',
-        promptContext,
-      ].join('\n'),
+      content: systemParts.join('\n'),
     },
     {
       role: 'user',

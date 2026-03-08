@@ -9,6 +9,7 @@ import type { ICoalescedBatch, IJob } from '../queue/types.js'
 
 const SOURCE_TO_CHANNEL_KIND: ReadonlyMap<EventSource, ChannelKind> = new Map([
   [EventSource.Telegram, ChannelKind.Telegram],
+  [EventSource.TelegramChannel, ChannelKind.Telegram],
   [EventSource.Terminal, ChannelKind.Terminal],
 ])
 
@@ -141,7 +142,11 @@ export class Orchestrator {
         this.ctx.eventQueue.moveJob(job, JobStatus.Processing, JobStatus.Done)
         console.log(`[loop-2:executor] === job ${job.id} done ===`)
 
-        await this.dispatchResponse(batch, result)
+        if (batch.requiresResponse) {
+          await this.dispatchResponse(batch, result)
+        } else {
+          console.log(`[loop-2:executor] job ${job.id} — observation event, skipping response dispatch`)
+        }
       } catch (err: unknown) {
         const errMsg = err instanceof Error ? err.message : String(err)
         console.error(`[loop-2:executor] job ${job.id} failed: ${errMsg}`)

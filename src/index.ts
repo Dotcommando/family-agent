@@ -88,7 +88,7 @@ async function bootstrap(): Promise<void> {
   console.log('[boot] terminal adapter ready — use famagent CLI to send messages')
 
   console.log('[boot] initializing integrations')
-  const telegram = new TelegramIntegration(appSecrets, eventBus)
+  const telegram = new TelegramIntegration(appSecrets, envConfig, eventBus)
   const browser = new BrowserIntegration()
   const n8n = new N8nIntegration(appSecrets)
   const blog = new BlogIntegration()

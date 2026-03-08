@@ -10,6 +10,7 @@ Persistent семейный ассистент с тремя контурами:
 - Ollama
 - Podman Compose / Docker Compose
 - Markdown-first memory
+- Telegram через MTProto (user account, gram.js)
 - Локальная папка `runtime-secrets/` вместо Docker secrets
 
 ## Что где работает
@@ -231,6 +232,103 @@ TerminalAdapter.sendResponse()    ← сохраняет ответ в state/ter
 AGENT_URL=http://192.168.1.100:3000 famagent --status
 ```
 
+## Telegram-интеграция
+
+Агент подключается к Telegram как пользовательский аккаунт через MTProto (библиотека gram.js). Это не Bot API — агент работает от лица реального аккаунта.
+
+### Настройка
+
+Для работы нужны три секрета в `runtime-secrets/`:
+
+| Файл | Описание |
+|---|---|
+| `telegram_api_id` | API ID из [my.telegram.org](https://my.telegram.org) |
+| `telegram_api_hash` | API Hash оттуда же |
+| `telegram_session` | Session string (генерируется один раз при авторизации) |
+
+Если секреты отсутствуют, агент стартует нормально — Telegram-интеграция просто пропускается.
+
+### Типы чатов
+
+Агент различает типы Telegram-чатов:
+
+| Тип | Как определяется | Поведение |
+|---|---|---|
+| `private` | `PeerUser` | Агент реагирует на все текстовые сообщения |
+| `group` | `PeerChat` | Реагирует только на mention или reply (см. ниже) |
+| `supergroup` | `PeerChannel` + `post=false` | Реагирует только на mention или reply |
+| `channel` | `PeerChannel` + `post=true` | Observation event, без ответа |
+| `unknown` | Не удалось определить | Обрабатывается как private |
+
+### Правило mention / reply в группах
+
+В групповых и супергрупповых чатах агент реагирует только если:
+
+1. В тексте упомянут `@username` агента, или
+2. Сообщение является reply на сообщение агента
+
+Это поведение управляется переменной `TELEGRAM_REQUIRE_MENTION_IN_GROUPS` (по умолчанию `true`). Если установить в `false`, агент будет реагировать на все сообщения в группах.
+
+При старте агент получает свой username через `client.getMe()`. Если username отсутствует (у аккаунта не задан), mention-детекция не работает, но reply-to-agent продолжает работать.
+
+### Channel posts (наблюдения)
+
+Сообщения из каналов обрабатываются как **observation events**:
+
+- Попадают в event pipeline с `EventSource.TelegramChannel`
+- Сохраняются в очереди
+- Участвуют в reasoning цикле
+- **Агент не отвечает в канал**
+- В логах явно видно: `channel post ... observation event, no response will be sent`
+
+Пример: канал публикует "OpenAI released a new model today" — агент проанализирует это как новость, может учесть в планировании, но не отправит ответ.
+
+### Whitelist (разрешения)
+
+Простая модель доступа через `.env`:
+
+```env
+# Разрешённые chat id (через запятую)
+TELEGRAM_ALLOWED_CHATS=123456789,-1001234567890
+
+# Разрешённые user id (через запятую)
+TELEGRAM_ALLOWED_USERS=987654321
+
+# Требовать mention/reply в группах (по умолчанию true)
+TELEGRAM_REQUIRE_MENTION_IN_GROUPS=true
+```
+
+Правила:
+- Если оба списка пусты — агент отвечает всем (стандартное поведение)
+- Если заданы — агент реагирует только на разрешённые chat/user
+- Остальные сообщения логируются как проигнорированные
+
+### Reconnect
+
+При потере соединения агент автоматически переподключается с exponential backoff:
+
+- Начальная задержка: 5 секунд
+- Множитель: ×2 на каждую попытку
+- Максимальная задержка: 5 минут
+- После успешного reconnect — счётчик сбрасывается
+- Все попытки логируются
+- `integration status` корректно отражает текущее состояние (`connecting` во время reconnect)
+
+Нет "тихой смерти" — если соединение пропало, это видно в логах и статусе.
+
+### Обработка сообщений без text
+
+- Если есть `text` → используется `text`
+- Если нет `text`, но есть `message` (caption) → используется caption
+- Остальные типы сообщений (только медиа без подписи) игнорируются
+
+### Текущие ограничения
+
+- Bootstrap новой session string не реализован (нужно генерировать отдельно)
+- Полная поддержка медиа отсутствует (только текст и caption)
+- Отправка ответов в каналы не поддерживается (и не планируется)
+- Reply-to-agent детекция работает только для сообщений, отправленных агентом в текущей сессии (ID не персистируются между перезапусками)
+
 ## Архитектура каналов
 
 Агент не привязан к конкретному способу общения. Каждый канал — это адаптер, реализующий интерфейс `IChannelAdapter`:
@@ -244,10 +342,59 @@ IChannelAdapter
 
 Когда приходит сообщение, оно несёт метку `source` (например, `terminal` или `telegram`). После reasoning оркестратор находит адаптер для этого source и отправляет ответ через него. Агент всегда отвечает в тот канал, из которого пришло сообщение.
 
+Исключение: events с `requiresResponse: false` (например, channel posts) проходят через reasoning, но ответ не отправляется.
+
 Чтобы добавить новый канал:
 1. Создать класс, реализующий `IChannelAdapter`
 2. Зарегистрировать его в массиве `channels` при старте (в `src/index.ts`)
 3. Добавить маппинг `EventSource → channel kind` в оркестраторе
+
+## Channel policies
+
+Policies задают правила поведения агента для каждого канала.
+
+### Структура
+
+```
+state/policies/
+├── telegram.md    — правила для Telegram
+├── terminal.md    — правила для терминала
+└── (другие).md    — для будущих каналов
+```
+
+### Как работает
+
+- При reasoning загружается policy только для того канала, из которого пришло сообщение
+- Telegram-сообщение → загружается `telegram.md`
+- CLI-сообщение → загружается `terminal.md`
+- Policy других каналов **не** добавляются в prompt
+- Policy включается в system prompt как секция `## Channel policy`
+
+### Отсутствие policy
+
+Если policy-файл не существует:
+- Приложение **не падает**
+- Policy считается пустой строкой
+- Reasoning работает без policy-контекста
+
+### Пример Telegram policy
+
+```markdown
+# Telegram policy
+
+- Ты не обязан реагировать на каждое сообщение.
+- Сначала пойми, требуется ли твоё участие.
+- В групповых чатах не встревай без причины.
+```
+
+### Пример Terminal policy
+
+```markdown
+# Terminal policy
+
+- Сообщение из терминала почти всегда адресовано тебе напрямую.
+- Отвечай по существу.
+```
 
 ## Секреты
 
@@ -346,11 +493,16 @@ state/
 │   ├── done/                    — завершённые jobs
 │   └── failed/                  — упавшие jobs
 ├── terminal-chat/               — лог терминального чата (JSON)
-└── purpose/
-    └── main.md                  — кто агент, для чего, ограничения
+├── purpose/
+│   └── main.md                  — кто агент, для чего, ограничения
+└── policies/
+    ├── telegram.md              — policy для Telegram-канала
+    └── terminal.md              — policy для терминала
 ```
 
 `state/purpose/main.md` загружается в контекст агента при каждом reasoning-цикле.
+
+`state/policies/*.md` загружаются по имени канала при reasoning. Если файл отсутствует — policy пустая.
 
 ## Переменные окружения
 
@@ -364,6 +516,7 @@ state/
 | `MEMORY_DIR` | `/app/memory` | Путь к markdown-памяти |
 | `SECRETS_DIR` | `/run/secrets` | Путь к секретам |
 | `PURPOSE_DIR` | `/app/state/purpose` | Путь к purpose-файлу |
+| `POLICIES_DIR` | `/app/state/policies` | Путь к policy-файлам |
 | `TERMINAL_CHAT_DIR` | `/app/state/terminal-chat` | Путь к логу терминального чата |
 | `AGENT_QUEUE_DIR` | `/app/state/queue` | Путь к очереди |
 | `AGENT_EVENT_POLL_SECONDS` | `10` | Интервал поллинга очереди |
@@ -384,3 +537,6 @@ state/
 | `AGENT_SUMMARY_MIN_IDLE_SECONDS` | `60` | Мин. idle перед саммаризацией |
 | `AGENT_SUMMARY_MAX_CONCURRENT` | `1` | Макс. параллельных саммаризаций |
 | `AGENT_SUMMARY_RAW_RETENTION_DAYS` | `14` | Сколько дней хранить сырые run-файлы |
+| `TELEGRAM_ALLOWED_CHATS` | (пусто) | Whitelist chat id через запятую |
+| `TELEGRAM_ALLOWED_USERS` | (пусто) | Whitelist user id через запятую |
+| `TELEGRAM_REQUIRE_MENTION_IN_GROUPS` | `true` | Требовать mention/reply в группах |

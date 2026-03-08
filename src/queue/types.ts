@@ -6,6 +6,7 @@ export enum EventPriority {
 
 export enum EventSource {
   Telegram = 'telegram',
+  TelegramChannel = 'telegram-channel',
   Terminal = 'terminal',
   Browser = 'browser',
   N8n = 'n8n',
@@ -31,6 +32,7 @@ export interface IAgentEvent {
   payload: string
   createdAt: string
   batchable: boolean
+  requiresResponse: boolean
 }
 
 export interface ICoalescedBatch {
@@ -40,6 +42,7 @@ export interface ICoalescedBatch {
   lastAt: string
   latestPayload: string
   messageCount: number
+  requiresResponse: boolean
 }
 
 export interface IJob {

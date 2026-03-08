@@ -15,7 +15,8 @@ function isAgentEvent(value: unknown): value is IAgentEvent {
     typeof value['priority'] === 'number' &&
     typeof value['payload'] === 'string' &&
     typeof value['createdAt'] === 'string' &&
-    typeof value['batchable'] === 'boolean'
+    typeof value['batchable'] === 'boolean' &&
+    typeof value['requiresResponse'] === 'boolean'
   )
 }
 
@@ -119,6 +120,7 @@ export class EventQueue {
         lastAt: lastCreatedAt,
         latestPayload: lastPayload,
         messageCount: limited.length,
+        requiresResponse: limited.some((e) => e.requiresResponse),
       })
     }
 
@@ -130,6 +132,7 @@ export class EventQueue {
         lastAt: event.createdAt,
         latestPayload: event.payload,
         messageCount: 1,
+        requiresResponse: event.requiresResponse,
       })
     }
 
