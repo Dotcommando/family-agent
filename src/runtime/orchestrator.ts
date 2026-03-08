@@ -84,7 +84,7 @@ export class Orchestrator {
       return
     }
 
-    if (this.currentJobId) {
+    if (this.currentJobId || this.summaryRunning) {
       return
     }
 
@@ -99,7 +99,7 @@ export class Orchestrator {
 
     await this.sleep(windowMs)
 
-    if (this.currentJobId) {
+    if (this.currentJobId || this.summaryRunning) {
       return
     }
 
@@ -214,8 +214,8 @@ export class Orchestrator {
       return
     }
 
-    if (this.currentJobId) {
-      console.log('[loop-3:reflection] skipping — job in progress')
+    if (this.currentJobId || this.summaryRunning) {
+      console.log('[loop-3:reflection] skipping — job or summary in progress')
       return
     }
 
@@ -257,42 +257,44 @@ export class Orchestrator {
   }
 
   private async runSummaryIfIdle(): Promise<void> {
-    if (!this.running) {
-      return
-    }
-
-    if (this.summaryRunning) {
-      return
-    }
-
-    if (this.currentJobId) {
+    if (!this.running || this.summaryRunning || this.currentJobId) {
       return
     }
 
     this.summaryRunning = true
     try {
-      await this.tickSummarization()
+      await this.drainSummaryPipeline()
     } finally {
       this.summaryRunning = false
     }
   }
 
-  private async tickSummarization(): Promise<void> {
-    const task = findNextSummaryTask(this.ctx.config, this.milestones)
+  private async drainSummaryPipeline(): Promise<void> {
+    let processed = 0
+    for (;;) {
+      if (!this.running) {
+        break
+      }
 
-    if (!task) {
-      return
+      const task = findNextSummaryTask(this.ctx.config, this.milestones)
+      if (!task) {
+        break
+      }
+
+      console.log(`[summarization] processing ${task.milestone.label}: ${task.inputFiles.length} files from ${task.sourceMilestone} [${task.periodStart} .. ${task.periodEnd}]`)
+
+      const rawContent = readInputContents(task.inputDir, task.inputFiles)
+      const summary = await runSummarization(this.ctx.config, task.milestone.label, rawContent)
+      if (summary) {
+        writeSummary(this.ctx.config, task, summary)
+      }
+      processed++
     }
 
-    console.log(`[summarization] processing ${task.milestone.label}: ${task.inputFiles.length} files from ${task.sourceMilestone} [${task.periodStart} .. ${task.periodEnd}]`)
-
-    const rawContent = readInputContents(task.inputDir, task.inputFiles)
-    const summary = await runSummarization(this.ctx.config, task.milestone.label, rawContent)
-    if (summary) {
-      writeSummary(this.ctx.config, task, summary)
+    if (processed > 0) {
+      cleanupOldRuns(this.ctx.config)
+      console.log(`[summarization] pipeline drained: ${processed} task(s) completed`)
     }
-
-    cleanupOldRuns(this.ctx.config)
   }
 
   private sleep(ms: number): Promise<void> {

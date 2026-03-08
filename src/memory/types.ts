@@ -26,12 +26,18 @@ export interface IRunHandoff {
   nextRunPlan: string
 }
 
+export enum SummarySourceKind {
+  Runs = 'runs',
+  Summaries = 'summaries',
+}
+
 export interface ISummaryMeta {
   milestone: string
   periodStart: string
   periodEnd: string
   createdAt: string
   sourceMilestone: string
+  sourceKind: SummarySourceKind
   sourceCount: number
   sourceRefs: string[]
 }

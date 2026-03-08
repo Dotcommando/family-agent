@@ -2,6 +2,7 @@ import { readdirSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, exists
 import { join } from 'node:path'
 import type { IEnvConfig } from '../config/env.js'
 import type { IMilestoneSpec, ISummaryMeta, ISummaryTask } from './types.js'
+import { SummarySourceKind } from './types.js'
 import { isRecord } from '../lib/type-utils.js'
 
 const UNIT_MAP: Record<string, number> = {
@@ -29,10 +30,7 @@ function alignPeriodEnd(now: Date, milestoneSeconds: number): Date {
   return new Date(aligned)
 }
 
-function isSummaryMeta(value: unknown): value is ISummaryMeta {
-  if (!isRecord(value)) {
-    return false
-  }
+function isLegacySummaryMeta(value: Record<string, unknown>): boolean {
   return (
     typeof value['milestone'] === 'string' &&
     typeof value['periodStart'] === 'string' &&
@@ -44,13 +42,37 @@ function isSummaryMeta(value: unknown): value is ISummaryMeta {
   )
 }
 
+function normalizeSummaryMeta(value: Record<string, unknown>): ISummaryMeta | undefined {
+  if (!isLegacySummaryMeta(value)) {
+    return undefined
+  }
+  const sk = value['sourceKind']
+  const sourceKind = sk === SummarySourceKind.Runs || sk === SummarySourceKind.Summaries
+    ? sk
+    : value['sourceMilestone'] === 'runs'
+      ? SummarySourceKind.Runs
+      : SummarySourceKind.Summaries
+  return {
+    milestone: String(value['milestone']),
+    periodStart: String(value['periodStart']),
+    periodEnd: String(value['periodEnd']),
+    createdAt: String(value['createdAt']),
+    sourceMilestone: String(value['sourceMilestone']),
+    sourceKind,
+    sourceCount: Number(value['sourceCount']),
+    sourceRefs: Array.isArray(value['sourceRefs'])
+      ? value['sourceRefs'].map((r: unknown) => String(r))
+      : [],
+  }
+}
+
 function readSummaryMeta(metaPath: string): ISummaryMeta | undefined {
   if (!existsSync(metaPath)) {
     return undefined
   }
   try {
     const raw: unknown = JSON.parse(readFileSync(metaPath, 'utf8'))
-    return isSummaryMeta(raw) ? raw : undefined
+    return isRecord(raw) ? normalizeSummaryMeta(raw) : undefined
   } catch {
     return undefined
   }
@@ -83,6 +105,22 @@ function parseFinishedAtFromRun(fileName: string): string | undefined {
   return Number.isFinite(d.getTime()) ? d.toISOString() : undefined
 }
 
+function readRunFinishedAt(runsDir: string, mdFile: string): string | undefined {
+  const metaFile = mdFile.replace(/\.md$/, '.meta.json')
+  const metaPath = join(runsDir, metaFile)
+  try {
+    if (existsSync(metaPath)) {
+      const raw: unknown = JSON.parse(readFileSync(metaPath, 'utf8'))
+      if (isRecord(raw) && typeof raw['finishedAt'] === 'string') {
+        return raw['finishedAt']
+      }
+    }
+  } catch {
+    // fall through to filename parsing
+  }
+  return parseFinishedAtFromRun(mdFile)
+}
+
 function findRunsInWindow(runsDir: string, periodStart: string, periodEnd: string, maxItems: number): string[] {
   if (!existsSync(runsDir)) {
     return []
@@ -90,7 +128,7 @@ function findRunsInWindow(runsDir: string, periodStart: string, periodEnd: strin
   const files = readdirSync(runsDir).filter((f) => f.endsWith('.md')).sort()
   const matched: string[] = []
   for (const file of files) {
-    const finishedAt = parseFinishedAtFromRun(file)
+    const finishedAt = readRunFinishedAt(runsDir, file)
     if (!finishedAt) {
       continue
     }
@@ -228,6 +266,7 @@ export function writeSummary(
     periodEnd: task.periodEnd,
     createdAt,
     sourceMilestone: task.sourceMilestone,
+    sourceKind: task.previousMilestone === undefined ? SummarySourceKind.Runs : SummarySourceKind.Summaries,
     sourceCount: task.sourceCount,
     sourceRefs: task.inputFiles,
   }
@@ -249,15 +288,20 @@ export function cleanupOldRuns(config: IEnvConfig): number {
   let removed = 0
 
   for (const file of files) {
-    const finishedAt = parseFinishedAtFromRun(file)
+    const finishedAt = readRunFinishedAt(runsDir, file)
     if (finishedAt && finishedAt < cutoff) {
       unlinkSync(join(runsDir, file))
+      const metaFile = file.replace(/\.md$/, '.meta.json')
+      const metaPath = join(runsDir, metaFile)
+      if (existsSync(metaPath)) {
+        unlinkSync(metaPath)
+      }
       removed++
     }
   }
 
   if (removed > 0) {
-    console.log(`[summarization] cleaned up ${removed} old run files`)
+    console.log(`[summarization] cleaned up ${removed} old run file(s) (.md + .meta.json)`)
   }
 
   return removed

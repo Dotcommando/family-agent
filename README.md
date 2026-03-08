@@ -345,6 +345,7 @@ TELEGRAM_REQUIRE_MENTION_IN_GROUPS=true
 - Полная поддержка медиа отсутствует (только текст и caption)
 - Отправка ответов в каналы не поддерживается (и не планируется)
 - Reply-to-agent детекция работает только для сообщений, отправленных агентом в текущей сессии (ID не персистируются между перезапусками)
+- Отправка сообщений (`sendMessage`) использует `Number(chatId)` как entity. gram.js ожидает числовой peer ID. Если числовой ID не парсится (например, канал с очень большим ID), отправка может не сработать. В будущем можно решить через `getEntity()` или `BigInt`-entity
 
 ## Архитектура каналов
 
@@ -458,11 +459,11 @@ cp -R runtime-secrets.example runtime-secrets
 
 В каждый момент времени активна только одна reasoning job. Пока она работает, новые события продолжают складываться в очередь. Пользовательские события имеют приоритет над фоновыми.
 
-После завершения каждой job оркестратор проверяет, есть ли готовая задача на саммаризацию, и выполняет её до перехода к следующим внешним событиям.
+После завершения каждой job оркестратор запускает `drainSummaryPipeline()` — цикл, который последовательно выполняет все доступные задачи на саммаризацию (от bottom-level до upper-level), пока pipeline не исчерпан. Только после этого оркестратор возвращается к обработке внешних событий.
 
 #### 3. Фоновая рефлексия
 
-Thought loop запускается по таймеру (`AGENT_THOUGHT_LOOP_SECONDS`, по умолчанию 240с). Если в очереди есть пользовательские события или активна job — рефлексия пропускается.
+Thought loop запускается по таймеру (`AGENT_THOUGHT_LOOP_SECONDS`, по умолчанию 240с). Если в очереди есть пользовательские события, активна job или идёт саммаризация — рефлексия пропускается.
 
 Thought loop НЕ запускает саммаризацию — саммаризация работает независимо.
 
@@ -471,16 +472,16 @@ Thought loop НЕ запускает саммаризацию — саммари
 Саммаризация работает отдельно от thought loop:
 
 - Запускается по собственному таймеру (с тем же интервалом, что thought loop)
-- Запускается после завершения каждой job (до обработки следующих событий)
+- Запускается после завершения каждой job — `drainSummaryPipeline()` последовательно выполняет все доступные задачи, пока pipeline не исчерпан
 - Не запускается, если уже идёт другая саммаризация или reasoning job
-- За один тик обрабатывает **одну** задачу
+- Пока саммаризация работает (`summaryRunning`), исполнитель очереди и thought loop заблокированы
 
 **Алгоритм выбора задачи (`findNextSummaryTask`)**:
 
 1. Milestones сортируются от наименьшего к наибольшему: `1h → 3h → 6h → 24h → ...`
 2. Для каждого milestone вычисляется текущий period: `periodEnd = floor(now / milestone.seconds) * milestone.seconds`, `periodStart = periodEnd - milestone.seconds`
 3. Если для этого periodEnd уже есть summary (проверяется по `.meta.json`) — пропускаем
-4. Для bottom-level (самый маленький milestone): ищем run-файлы с `finishedAt` в `[periodStart, periodEnd)`. Если нет подходящих — **STOP** (не проверяем более крупные milestones)
+4. Для bottom-level (самый маленький milestone): ищем run-файлы с `finishedAt` в `[periodStart, periodEnd)`. `finishedAt` читается из sidecar `.meta.json` рядом с run-файлом, с fallback на парсинг имени файла. Если нет подходящих — **STOP** (не проверяем более крупные milestones)
 5. Для upper-level: `sourceCount = ceil(target.seconds / previous.seconds)`. Берём последние `sourceCount` summaries из предыдущего milestone, у которых `meta.periodEnd <= targetEnd`. Если их меньше, чем `sourceCount` — **STOP**
 
 **Ключевой принцип**: если текущий milestone не готов (недостаточно входных данных) — алгоритм останавливается. Нет смысла проверять более крупные milestones, если мелкие ещё не заполнены.
@@ -496,10 +497,13 @@ Thought loop НЕ запускает саммаризацию — саммари
   "periodEnd": "2026-03-08T18:00:00.000Z",
   "createdAt": "2026-03-08T18:00:01.234Z",
   "sourceMilestone": "1h",
+  "sourceKind": "summaries",
   "sourceCount": 3,
   "sourceRefs": ["2026-03-08T15-00-01-234Z.md", "2026-03-08T16-00-01-234Z.md", "2026-03-08T17-00-01-234Z.md"]
 }
 ```
+
+`sourceKind` — `"runs"` для bottom-level (источник — сырые run-файлы) или `"summaries"` для upper-level (источник — саммари предыдущего уровня). При чтении старых `.meta.json` без этого поля значение выводится из `sourceMilestone`.
 
 Отбор source summaries для upper-level происходит по `meta.periodEnd`, а не по имени файла или дате создания.
 
@@ -592,7 +596,7 @@ state/
 | `AGENT_DEDUP_THOUGHT_LOOP` | `true` | Дедупликация thought loop |
 | `AGENT_SUMMARIZATION_MILESTONES` | `1h,3h,...,365d` | Горизонты саммаризации |
 | `AGENT_SUMMARIZATION_MAX_INPUT_ITEMS` | `200` | Макс. файлов на вход саммаризации |
-| `AGENT_SUMMARY_RAW_RETENTION_DAYS` | `14` | Сколько дней хранить сырые run-файлы |
+| `AGENT_SUMMARY_RAW_RETENTION_DAYS` | `14` | Сколько дней хранить сырые run-файлы (.md + .meta.json) |
 | `TELEGRAM_ALLOWED_CHATS` | (пусто) | Whitelist chat id через запятую |
 | `TELEGRAM_ALLOWED_USERS` | (пусто) | Whitelist user id через запятую |
 | `TELEGRAM_REQUIRE_MENTION_IN_GROUPS` | `true` | Требовать mention/reply в группах |
