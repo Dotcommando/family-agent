@@ -285,14 +285,17 @@ export class Orchestrator {
 
       const rawContent = readInputContents(task.inputDir, task.inputFiles)
       const summary = await runSummarization(this.ctx.config, task.milestone.label, rawContent)
-      if (summary) {
-        writeSummary(this.ctx.config, task, summary)
+      if (!summary) {
+        console.log(`[summarization] summary generation failed for ${task.milestone.label} [${task.periodStart} .. ${task.periodEnd}] — drain pass stopped, will retry on next tick`)
+        break
       }
+      writeSummary(this.ctx.config, task, summary)
       processed++
     }
 
+    cleanupOldRuns(this.ctx.config)
+
     if (processed > 0) {
-      cleanupOldRuns(this.ctx.config)
       console.log(`[summarization] pipeline drained: ${processed} task(s) completed`)
     }
   }
