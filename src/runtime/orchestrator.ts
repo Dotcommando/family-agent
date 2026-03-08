@@ -230,18 +230,22 @@ export class Orchestrator {
 
     const thoughtId = randomUUID().slice(0, 8)
     this.lastThoughtLoopId = thoughtId
+    this.currentJobId = `thought-${thoughtId}`
     console.log(`[loop-3:reflection] === thought loop ${thoughtId} ===`)
 
-    if (this.ctx.config.proactiveMode) {
-      try {
+    try {
+      if (this.ctx.config.proactiveMode) {
         const memory = loadMemoryContext(this.ctx.config)
         await runThoughtLoop(this.ctx.config, memory)
-      } catch (err: unknown) {
-        const errMsg = err instanceof Error ? err.message : String(err)
-        console.error(`[loop-3:reflection] thought loop error: ${errMsg}`)
+      } else {
+        console.log('[loop-3:reflection] proactive mode disabled, skipping LLM reflection')
       }
-    } else {
-      console.log('[loop-3:reflection] proactive mode disabled, skipping LLM reflection')
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : String(err)
+      console.error(`[loop-3:reflection] thought loop error: ${errMsg}`)
+    } finally {
+      this.currentJobId = undefined
+      this.lastJobFinishedAt = Date.now()
     }
   }
 

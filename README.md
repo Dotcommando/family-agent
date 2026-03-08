@@ -451,6 +451,8 @@ cp -R runtime-secrets.example runtime-secrets
 
 ### Три контура + независимая саммаризация
 
+**Взаимоисключение**: в каждый момент времени работает только один активный исполнительный контур: reasoning job, thought loop или summary pipeline. `reasoning job` и `thought loop` используют `currentJobId` как флаг занятости. `summary pipeline` использует `summaryRunning`. Остальные контуры уважают оба флага и не стартуют, пока один из исполнительных контуров уже активен.
+
 #### 1. Событийный контур
 
 Новые сообщения (терминал, Telegram, n8n, браузер, будущие источники) не ждут thought loop. Они мгновенно попадают в файловую очередь `state/queue/pending/`.
@@ -464,6 +466,8 @@ cp -R runtime-secrets.example runtime-secrets
 #### 3. Фоновая рефлексия
 
 Thought loop запускается по таймеру (`AGENT_THOUGHT_LOOP_SECONDS`, по умолчанию 240с). Если в очереди есть пользовательские события, активна job или идёт саммаризация — рефлексия пропускается.
+
+Thought loop считается полноценным активным job: на время выполнения `currentJobId` установлен (`thought-{id}`), что блокирует event executor и summary pipeline. Сброс `currentJobId` гарантирован через `finally`.
 
 Thought loop НЕ запускает саммаризацию — саммаризация работает независимо.
 
