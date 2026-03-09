@@ -12,18 +12,9 @@ services:
     security_opt:
       - label=disable
     command:
-      - sh
-      - -lc
-      - |
-        ollama serve &
-        pid=$!
-        until ollama list >/dev/null 2>&1; do
-          sleep 1
-        done
-        ollama pull "$OLLAMA_MODEL"
-        wait "$pid"
+      - serve
     healthcheck:
-      test: ["CMD-SHELL", "ollama show $$OLLAMA_MODEL >/dev/null 2>&1"]
+      test: ["CMD", "ollama", "list"]
       interval: 10s
       timeout: 5s
       retries: 60
