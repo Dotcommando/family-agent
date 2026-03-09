@@ -17,6 +17,7 @@ const SOURCE_TO_CHANNEL_KIND: ReadonlyMap<EventSource, ChannelKind> = new Map([
 ])
 
 const INTERACTIVE_FAST_PATH_WINDOW_MS = 500
+const THOUGHT_LOOP_INITIAL_DELAY_MS = 0
 
 export class Orchestrator {
   private readonly ctx: IRuntimeContext
@@ -25,6 +26,7 @@ export class Orchestrator {
   private eventPollTimer: ReturnType<typeof setInterval> | undefined
   private thoughtLoopTimer: ReturnType<typeof setInterval> | undefined
   private summaryTimer: ReturnType<typeof setInterval> | undefined
+  private initialThoughtLoopTimer: ReturnType<typeof setTimeout> | undefined
   private lastThoughtLoopId: string | undefined
   private lastJobFinishedAt = 0
   private summaryRunning = false
@@ -72,6 +74,11 @@ export class Orchestrator {
     if (this.summaryTimer) {
       clearInterval(this.summaryTimer)
       this.summaryTimer = undefined
+    }
+
+    if (this.initialThoughtLoopTimer) {
+      clearTimeout(this.initialThoughtLoopTimer)
+      this.initialThoughtLoopTimer = undefined
     }
 
     if (this.immediatePollTimer) {
@@ -298,6 +305,11 @@ export class Orchestrator {
     this.thoughtLoopTimer = setInterval(() => {
       void this.tickThoughtLoop()
     }, intervalMs)
+
+    this.initialThoughtLoopTimer = setTimeout(() => {
+      this.initialThoughtLoopTimer = undefined
+      void this.tickThoughtLoop()
+    }, THOUGHT_LOOP_INITIAL_DELAY_MS)
   }
 
   private async tickThoughtLoop(): Promise<void> {
@@ -397,6 +409,7 @@ export class Orchestrator {
         console.log(`[summarization] summary generation failed for ${task.milestone.label} [${task.periodStart} .. ${task.periodEnd}] — drain pass stopped, will retry on next tick`)
         break
       }
+
       writeSummary(this.ctx.config, task, summary)
       processed++
     }
@@ -412,12 +425,15 @@ export class Orchestrator {
     if (!this.running) {
       return
     }
+
     if (this.immediatePollTimer || this.pollRunning) {
       return
     }
+
     if (!this.ctx.eventQueue.hasInteractiveEvents()) {
       return
     }
+
     console.log('[orchestrator] interactive events detected after idle work — scheduling immediate poll')
     this.immediatePollTimer = setTimeout(() => {
       this.immediatePollTimer = undefined
@@ -431,6 +447,7 @@ export class Orchestrator {
         return integration
       }
     }
+
     return undefined
   }
 
@@ -440,6 +457,7 @@ export class Orchestrator {
         this.coalesceCancelFn = undefined
         resolve()
       }, ms)
+
       this.coalesceCancelFn = () => {
         clearTimeout(timer)
         this.coalesceCancelFn = undefined
