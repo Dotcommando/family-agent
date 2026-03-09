@@ -28,10 +28,10 @@ services:
     env_file:
       - .env
     volumes:
-      - ./memory:/app/memory
-      - ./data/lancedb:/app/data/lancedb
-      - ./runtime-secrets:/run/secrets:ro
-      - ./state:/app/state
+      - ./memory:/app/memory:Z
+      - ./data/lancedb:/app/data/lancedb:Z
+      - ./runtime-secrets:/run/secrets:ro,Z
+      - ./state:/app/state:Z
     ports:
       - "3000:3000"
     restart: unless-stopped
