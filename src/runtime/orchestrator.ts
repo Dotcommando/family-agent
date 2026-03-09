@@ -32,6 +32,7 @@ export class Orchestrator {
   private pollRunning = false
   private immediatePollTimer: ReturnType<typeof setTimeout> | undefined
   private coalesceCancelFn: (() => void) | undefined
+  private inInteractiveFastPath = false
 
   constructor(ctx: IRuntimeContext) {
     this.ctx = ctx
@@ -107,7 +108,7 @@ export class Orchestrator {
     }
 
     if (this.pollRunning) {
-      if (this.coalesceCancelFn) {
+      if (this.coalesceCancelFn && !this.inInteractiveFastPath) {
         console.log(`[loop-1:events] interactive event from ${event.source} — cutting coalescing window short`)
         this.coalesceCancelFn()
       }
@@ -161,7 +162,9 @@ export class Orchestrator {
 
     if (hasInteractive) {
       console.log(`[loop-1:events] interactive fast path — coalescing window ${INTERACTIVE_FAST_PATH_WINDOW_MS}ms`)
+      this.inInteractiveFastPath = true
       await this.cancellableSleep(INTERACTIVE_FAST_PATH_WINDOW_MS)
+      this.inInteractiveFastPath = false
     } else {
       const coalesceMs = this.ctx.config.coalesceWindowSeconds * 1000
       const batchMs = this.ctx.config.messageBatchWindowSeconds * 1000
@@ -169,10 +172,20 @@ export class Orchestrator {
       console.log(`[loop-1:events] standard coalescing path — window ${windowMs}ms`)
       await this.cancellableSleep(windowMs)
 
+      if (!this.running) {
+        return
+      }
+
       if (this.ctx.eventQueue.hasInteractiveEvents()) {
         console.log(`[loop-1:events] interactive event arrived during standard window — applying fast path coalescing ${INTERACTIVE_FAST_PATH_WINDOW_MS}ms`)
+        this.inInteractiveFastPath = true
         await this.cancellableSleep(INTERACTIVE_FAST_PATH_WINDOW_MS)
+        this.inInteractiveFastPath = false
       }
+    }
+
+    if (!this.running) {
+      return
     }
 
     if (this.currentJobId || this.summaryRunning) {
