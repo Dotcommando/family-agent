@@ -71,6 +71,18 @@ export class EventQueue {
     return false
   }
 
+  hasInteractiveEvents(): boolean {
+    const files = readdirSync(this.pendingDir).filter((f) => f.endsWith('.json'))
+    for (const file of files) {
+      const raw = readFileSync(join(this.pendingDir, file), 'utf8')
+      const event = parseAgentEvent(raw)
+      if (event && event.priority === EventPriority.User && event.requiresResponse) {
+        return true
+      }
+    }
+    return false
+  }
+
   drainPending(): IAgentEvent[] {
     const files = readdirSync(this.pendingDir)
       .filter((f) => f.endsWith('.json'))

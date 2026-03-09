@@ -75,6 +75,11 @@ function isHealthResponse(value: unknown): value is IHealthResponse {
   return typeof value['ok'] === 'boolean'
 }
 
+function detectCliPrefix(): string {
+  const npmLifecycleEvent = process.env['npm_lifecycle_event']
+  return npmLifecycleEvent === 'cli' ? 'npm run cli --' : 'famagent'
+}
+
 function usage(): void {
   console.log(`
 famagent — CLI для общения с family-agent
@@ -84,6 +89,10 @@ famagent — CLI для общения с family-agent
   famagent --history [N]      Показать последние N сообщений (по умолчанию 20)
   famagent --status           Показать статус агента
   famagent --help             Показать справку
+
+Если не делали npm link, используйте npm run cli вместо famagent:
+  npm run cli -- -m "текст"
+  npm run cli -- --history 5
 `)
 }
 
@@ -102,9 +111,10 @@ async function sendMessage(text: string): Promise<void> {
     }
 
     if (raw.ok) {
+      const prefix = detectCliPrefix()
       console.log(`✓ Сообщение поставлено в очередь`)
       console.log(`  Агент обработает его в следующем цикле.`)
-      console.log(`  Чтобы увидеть ответ: famagent --history 5`)
+      console.log(`  Чтобы увидеть ответ: ${prefix} --history 5`)
     } else {
       console.error(`✗ Ошибка: ${raw.error ?? 'unknown'}`)
     }
@@ -190,7 +200,8 @@ async function main(): Promise<void> {
   if (mIndex !== -1) {
     const message = args[mIndex + 1]
     if (!message) {
-      console.error('✗ Укажите текст сообщения: famagent -m "ваш текст"')
+      const prefix = detectCliPrefix()
+      console.error(`✗ Укажите текст сообщения: ${prefix} -m "ваш текст"`)
       process.exit(1)
     }
     await sendMessage(message)

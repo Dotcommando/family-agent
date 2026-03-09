@@ -5,8 +5,8 @@ import { runReasoning, runThoughtLoop, runSummarization } from './reasoning.js'
 import type { IReasoningResult } from './reasoning.js'
 import { parseMilestones, findNextSummaryTask, readInputContents, writeSummary, cleanupOldRuns } from '../memory/summarization.js'
 import { ChannelKind } from '../channels/types.js'
-import { EventSource, JobStatus } from '../queue/types.js'
-import type { ICoalescedBatch, IJob } from '../queue/types.js'
+import { EventPriority, EventSource, JobStatus } from '../queue/types.js'
+import type { IAgentEvent, ICoalescedBatch, IJob } from '../queue/types.js'
 import type { IMilestoneSpec } from '../memory/types.js'
 import { BrowserIntegration } from '../integrations/browser.js'
 
@@ -15,6 +15,8 @@ const SOURCE_TO_CHANNEL_KIND: ReadonlyMap<EventSource, ChannelKind> = new Map([
   [EventSource.TelegramChannel, ChannelKind.Telegram],
   [EventSource.Terminal, ChannelKind.Terminal],
 ])
+
+const INTERACTIVE_FAST_PATH_WINDOW_MS = 500
 
 export class Orchestrator {
   private readonly ctx: IRuntimeContext
@@ -27,6 +29,9 @@ export class Orchestrator {
   private lastJobFinishedAt = 0
   private summaryRunning = false
   private milestones: ReadonlyArray<IMilestoneSpec> = []
+  private pollRunning = false
+  private immediatePollTimer: ReturnType<typeof setTimeout> | undefined
+  private coalesceCancelFn: (() => void) | undefined
 
   constructor(ctx: IRuntimeContext) {
     this.ctx = ctx
@@ -40,6 +45,7 @@ export class Orchestrator {
 
     this.ctx.eventBus.on((event) => {
       this.ctx.eventQueue.enqueue(event)
+      this.onEventEnqueued(event)
     })
 
     this.startEventPollLoop()
@@ -67,6 +73,16 @@ export class Orchestrator {
       this.summaryTimer = undefined
     }
 
+    if (this.immediatePollTimer) {
+      clearTimeout(this.immediatePollTimer)
+      this.immediatePollTimer = undefined
+    }
+
+    if (this.coalesceCancelFn) {
+      this.coalesceCancelFn()
+      this.coalesceCancelFn = undefined
+    }
+
     console.log('[orchestrator] stopped')
   }
 
@@ -81,8 +97,44 @@ export class Orchestrator {
     }, pollMs)
   }
 
+  private isInteractiveEvent(event: IAgentEvent): boolean {
+    return event.priority === EventPriority.User && event.requiresResponse
+  }
+
+  private onEventEnqueued(event: IAgentEvent): void {
+    if (!this.isInteractiveEvent(event)) {
+      return
+    }
+
+    if (this.pollRunning) {
+      if (this.coalesceCancelFn) {
+        console.log(`[loop-1:events] interactive event from ${event.source} — cutting coalescing window short`)
+        this.coalesceCancelFn()
+      }
+      return
+    }
+
+    if (this.currentJobId || this.summaryRunning) {
+      return
+    }
+
+    if (this.immediatePollTimer) {
+      return
+    }
+
+    console.log(`[loop-1:events] interactive event from ${event.source} — scheduling immediate poll`)
+    this.immediatePollTimer = setTimeout(() => {
+      this.immediatePollTimer = undefined
+      void this.tickEventPoll()
+    }, 0)
+  }
+
   private async tickEventPoll(): Promise<void> {
     if (!this.running) {
+      return
+    }
+
+    if (this.pollRunning) {
       return
     }
 
@@ -95,11 +147,33 @@ export class Orchestrator {
       return
     }
 
-    const coalesceMs = this.ctx.config.coalesceWindowSeconds * 1000
-    const batchMs = this.ctx.config.messageBatchWindowSeconds * 1000
-    const windowMs = Math.max(coalesceMs, batchMs)
+    this.pollRunning = true
+    try {
+      await this.executeEventPoll()
+    } finally {
+      this.pollRunning = false
+      this.scheduleImmediatePollIfNeeded()
+    }
+  }
 
-    await this.sleep(windowMs)
+  private async executeEventPoll(): Promise<void> {
+    const hasInteractive = this.ctx.eventQueue.hasInteractiveEvents()
+
+    if (hasInteractive) {
+      console.log(`[loop-1:events] interactive fast path — coalescing window ${INTERACTIVE_FAST_PATH_WINDOW_MS}ms`)
+      await this.cancellableSleep(INTERACTIVE_FAST_PATH_WINDOW_MS)
+    } else {
+      const coalesceMs = this.ctx.config.coalesceWindowSeconds * 1000
+      const batchMs = this.ctx.config.messageBatchWindowSeconds * 1000
+      const windowMs = Math.max(coalesceMs, batchMs)
+      console.log(`[loop-1:events] standard coalescing path — window ${windowMs}ms`)
+      await this.cancellableSleep(windowMs)
+
+      if (this.ctx.eventQueue.hasInteractiveEvents()) {
+        console.log(`[loop-1:events] interactive event arrived during standard window — applying fast path coalescing ${INTERACTIVE_FAST_PATH_WINDOW_MS}ms`)
+        await this.cancellableSleep(INTERACTIVE_FAST_PATH_WINDOW_MS)
+      }
+    }
 
     if (this.currentJobId || this.summaryRunning) {
       return
@@ -167,7 +241,12 @@ export class Orchestrator {
 
       this.currentJobId = undefined
       this.lastJobFinishedAt = Date.now()
+    }
 
+    if (this.ctx.eventQueue.hasInteractiveEvents()) {
+      console.log('[loop-2:executor] interactive events pending after drain pass — deferring summary')
+      this.scheduleImmediatePollIfNeeded()
+    } else {
       await this.runSummaryIfIdle()
     }
   }
@@ -250,6 +329,7 @@ export class Orchestrator {
     } finally {
       this.currentJobId = undefined
       this.lastJobFinishedAt = Date.now()
+      this.scheduleImmediatePollIfNeeded()
     }
   }
 
@@ -269,11 +349,18 @@ export class Orchestrator {
       return
     }
 
+    if (this.ctx.eventQueue.hasInteractiveEvents()) {
+      console.log('[summary] skipping — interactive events pending')
+      this.scheduleImmediatePollIfNeeded()
+      return
+    }
+
     this.summaryRunning = true
     try {
       await this.drainSummaryPipeline()
     } finally {
       this.summaryRunning = false
+      this.scheduleImmediatePollIfNeeded()
     }
   }
 
@@ -308,6 +395,23 @@ export class Orchestrator {
     }
   }
 
+  private scheduleImmediatePollIfNeeded(): void {
+    if (!this.running) {
+      return
+    }
+    if (this.immediatePollTimer || this.pollRunning) {
+      return
+    }
+    if (!this.ctx.eventQueue.hasInteractiveEvents()) {
+      return
+    }
+    console.log('[orchestrator] interactive events detected after idle work — scheduling immediate poll')
+    this.immediatePollTimer = setTimeout(() => {
+      this.immediatePollTimer = undefined
+      void this.tickEventPoll()
+    }, 0)
+  }
+
   private getBrowser(): BrowserIntegration | undefined {
     for (const integration of this.ctx.integrations) {
       if (integration instanceof BrowserIntegration) {
@@ -317,7 +421,17 @@ export class Orchestrator {
     return undefined
   }
 
-  private sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms))
+  private cancellableSleep(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.coalesceCancelFn = undefined
+        resolve()
+      }, ms)
+      this.coalesceCancelFn = () => {
+        clearTimeout(timer)
+        this.coalesceCancelFn = undefined
+        resolve()
+      }
+    })
   }
 }

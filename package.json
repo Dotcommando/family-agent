@@ -14,7 +14,10 @@
     "start": "node --enable-source-maps dist/index.js",
     "build": "tsc -p tsconfig.json",
     "check": "tsc --noEmit -p tsconfig.json",
-    "cli": "node --enable-source-maps dist/cli.js"
+    "cli": "node --enable-source-maps dist/cli.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:orchestrator": "vitest run src/runtime/__tests__/orchestrator.spec.ts"
   },
   "dependencies": {
     "@lancedb/lancedb": "0.18.2",
@@ -24,6 +27,7 @@
   "devDependencies": {
     "@types/node": "24.12.0",
     "tsx": "4.21.0",
-    "typescript": "5.9.3"
+    "typescript": "5.9.3",
+    "vitest": "4.0.18"
   }
 }

@@ -17,6 +17,7 @@ function ensureMemoryFiles(memoryDir: string, milestones: string[]): void {
   const nextRunPath = join(memoryDir, 'plans', 'next-run.md')
   mkdirSync(join(memoryDir, 'plans'), { recursive: true })
   mkdirSync(join(memoryDir, 'runs'), { recursive: true })
+  mkdirSync(join(memoryDir, 'identity'), { recursive: true })
 
   for (const milestone of milestones) {
     mkdirSync(join(memoryDir, 'summaries', milestone), { recursive: true })
@@ -26,6 +27,54 @@ function ensureMemoryFiles(memoryDir: string, milestones: string[]): void {
     writeFileSync(nextRunPath, '# Next run\n\n- Bootstrap pending tasks here.\n', {
       flag: 'wx'
     })
+  } catch {
+    // File already exists.
+  }
+
+  try {
+    writeFileSync(
+      join(memoryDir, 'identity', 'agent.md'),
+      '# Agent identity\n\n'
+        + '- Name: family-agent\n'
+        + '- Role: persistent family assistant\n'
+        + '- Practical and continuity-oriented\n'
+        + '- Maintains context across sessions\n',
+      { flag: 'wx' },
+    )
+  } catch {
+    // File already exists.
+  }
+}
+
+function ensureStateDefaults(purposeDir: string, policiesDir: string): void {
+  mkdirSync(purposeDir, { recursive: true })
+  mkdirSync(policiesDir, { recursive: true })
+
+  try {
+    writeFileSync(
+      join(purposeDir, 'main.md'),
+      '# Purpose\n\n'
+        + 'You are a persistent family assistant.\n\n'
+        + '- Help your family over a long time horizon\n'
+        + '- Work through terminal and other connected channels\n'
+        + '- Do not be noisy — respond when needed\n'
+        + '- Maintain continuity between sessions\n',
+      { flag: 'wx' },
+    )
+  } catch {
+    // File already exists.
+  }
+
+  try {
+    writeFileSync(
+      join(policiesDir, 'terminal.md'),
+      '# Terminal policy\n\n'
+        + '- Messages from terminal are almost always addressed to you directly\n'
+        + '- Respond clearly and practically\n'
+        + '- Use browser only when genuinely needed\n'
+        + '- Maintain continuity between runs\n',
+      { flag: 'wx' },
+    )
   } catch {
     // File already exists.
   }
@@ -64,6 +113,9 @@ async function bootstrap(): Promise<void> {
   console.log('[boot] ensuring memory directories')
   ensureMemoryFiles(envConfig.memoryDir, envConfig.summarizationMilestones)
   ensureQueueDirs(envConfig.queueDir)
+
+  console.log('[boot] ensuring state defaults (purpose, policies)')
+  ensureStateDefaults(envConfig.purposeDir, envConfig.policiesDir)
 
   console.log('[boot] initializing LanceDB')
   await initLanceDb(envConfig.lanceDbDir)

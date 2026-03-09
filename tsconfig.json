@@ -6,23 +6,18 @@
     "outDir": "dist",
     "rootDir": "src",
     "strict": true,
-    "noImplicitAny": true,
-    "noUncheckedIndexedAccess": true,
-    "exactOptionalPropertyTypes": true,
-    "skipLibCheck": true,
+    "noEmitOnError": true,
     "esModuleInterop": true,
-    "forceConsistentCasingInFileNames": true,
-    "resolveJsonModule": true,
-    "types": [
-      "node"
-    ],
-    "paths": {
-      "telegram/events": [
-        "./node_modules/telegram/events/index.d.ts"
-      ]
-    }
+    "skipLibCheck": true
   },
   "include": [
-    "src/**/*.ts"
+    "src/**/*.ts",
+    "src/**/*.d.ts"
+  ],
+  "exclude": [
+    "dist",
+    "node_modules",
+    "src/**/*.spec.ts",
+    "src/**/__tests__/**/*.ts"
   ]
 }
