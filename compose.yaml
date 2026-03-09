@@ -1,83 +1,23 @@
 services:
-  ollama:
-    image: docker.io/ollama/ollama:rocm
-    container_name: family-agent-ollama
-    env_file:
-      - .env
-    ports:
-      - "11434:11434"
-    devices:
-      - /dev/kfd
-      - /dev/dri
-    security_opt:
-      - label=disable
-    entrypoint:
-      - /bin/sh
-      - -lc
-    command: |
-      set -eu
-
-      MODEL="${OLLAMA_MODEL:-qwen2.5:14b}"
-
-      /bin/ollama serve &
-      OLLAMA_PID=$!
-
-      trap 'kill "$OLLAMA_PID" 2>/dev/null || true; wait "$OLLAMA_PID" 2>/dev/null || true' INT TERM EXIT
-
-      echo "[ollama-init] waiting for ollama api"
-      until /bin/ollama list >/dev/null 2>&1; do
-        sleep 2
-      done
-
-      echo "[ollama-init] checking model: $MODEL"
-      if ! /bin/ollama show "$MODEL" >/dev/null 2>&1; then
-        echo "[ollama-init] pulling model: $MODEL"
-        /bin/ollama pull "$MODEL"
-      else
-        echo "[ollama-init] model already exists: $MODEL"
-      fi
-
-      echo "[ollama-init] ready"
-      wait "$OLLAMA_PID"
-    healthcheck:
-      test: ["CMD", "/bin/ollama", "list"]
-      interval: 15s
-      timeout: 10s
-      retries: 20
-      start_period: 20s
-    volumes:
-      - ollama-data:/root/.ollama
-    restart: unless-stopped
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-
   agent:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: family-agent-app
-    depends_on:
-      - ollama
+    network_mode: host
     env_file:
       - .env
     environment:
+      OLLAMA_BASE_URL: http://127.0.0.1:11434
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:14b}
     volumes:
       - ./memory:/app/memory:Z
       - ./data/lancedb:/app/data/lancedb:Z
       - ./runtime-secrets:/run/secrets:ro,Z
       - ./state:/app/state:Z
-    ports:
-      - "3000:3000"
     restart: unless-stopped
     logging:
       driver: json-file
       options:
         max-size: "20m"
         max-file: "5"
-
-volumes:
-  ollama-data:
