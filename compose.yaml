@@ -11,14 +11,40 @@ services:
       - /dev/dri
     security_opt:
       - label=disable
-    command:
-      - serve
+    entrypoint:
+      - /bin/sh
+      - -lc
+    command: |
+      set -eu
+
+      MODEL="${OLLAMA_MODEL:-qwen2.5:14b}"
+
+      /bin/ollama serve &
+      OLLAMA_PID=$!
+
+      trap 'kill "$OLLAMA_PID" 2>/dev/null || true; wait "$OLLAMA_PID" 2>/dev/null || true' INT TERM EXIT
+
+      echo "[ollama-init] waiting for ollama api"
+      until /bin/ollama list >/dev/null 2>&1; do
+        sleep 2
+      done
+
+      echo "[ollama-init] checking model: $MODEL"
+      if ! /bin/ollama show "$MODEL" >/dev/null 2>&1; then
+        echo "[ollama-init] pulling model: $MODEL"
+        /bin/ollama pull "$MODEL"
+      else
+        echo "[ollama-init] model already exists: $MODEL"
+      fi
+
+      echo "[ollama-init] ready"
+      wait "$OLLAMA_PID"
     healthcheck:
-      test: ["CMD", "ollama", "list"]
-      interval: 10s
-      timeout: 5s
-      retries: 60
-      start_period: 10s
+      test: ["CMD", "/bin/ollama", "list"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 20s
     volumes:
       - ollama-data:/root/.ollama
     restart: unless-stopped
@@ -37,6 +63,8 @@ services:
       - ollama
     env_file:
       - .env
+    environment:
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:14b}
     volumes:
       - ./memory:/app/memory:Z
       - ./data/lancedb:/app/data/lancedb:Z
