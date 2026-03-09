@@ -2,6 +2,8 @@ services:
   ollama:
     image: docker.io/ollama/ollama:rocm
     container_name: family-agent-ollama
+    env_file:
+      - .env
     ports:
       - "11434:11434"
     devices:
@@ -9,6 +11,23 @@ services:
       - /dev/dri
     security_opt:
       - label=disable
+    command:
+      - sh
+      - -lc
+      - |
+        ollama serve &
+        pid=$!
+        until ollama list >/dev/null 2>&1; do
+          sleep 1
+        done
+        ollama pull "$OLLAMA_MODEL"
+        wait "$pid"
+    healthcheck:
+      test: ["CMD-SHELL", "ollama show $$OLLAMA_MODEL >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 10s
     volumes:
       - ollama-data:/root/.ollama
     restart: unless-stopped

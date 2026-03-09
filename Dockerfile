@@ -29,7 +29,8 @@ RUN npx playwright install chromium
 
 COPY tsconfig.json ./
 COPY src ./src
+COPY docker/agent-entrypoint.mjs /usr/local/bin/agent-entrypoint.mjs
 
 RUN npm run build
 
-CMD ["npm", "run", "start"]
+CMD ["node", "/usr/local/bin/agent-entrypoint.mjs"]
