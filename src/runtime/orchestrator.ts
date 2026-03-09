@@ -2,11 +2,13 @@ import { randomUUID } from 'node:crypto'
 import type { IRuntimeContext } from './types.js'
 import { loadMemoryContext } from '../memory/memory-loader.js'
 import { runReasoning, runThoughtLoop, runSummarization } from './reasoning.js'
+import type { IReasoningResult } from './reasoning.js'
 import { parseMilestones, findNextSummaryTask, readInputContents, writeSummary, cleanupOldRuns } from '../memory/summarization.js'
 import { ChannelKind } from '../channels/types.js'
 import { EventSource, JobStatus } from '../queue/types.js'
 import type { ICoalescedBatch, IJob } from '../queue/types.js'
 import type { IMilestoneSpec } from '../memory/types.js'
+import { BrowserIntegration } from '../integrations/browser.js'
 
 const SOURCE_TO_CHANNEL_KIND: ReadonlyMap<EventSource, ChannelKind> = new Map([
   [EventSource.Telegram, ChannelKind.Telegram],
@@ -140,15 +142,17 @@ export class Orchestrator {
 
       try {
         const memory = loadMemoryContext(this.ctx.config)
-        const result = await runReasoning(this.ctx.config, memory, batch)
-        job.result = result.slice(0, 2000)
+        const reasoningResult: IReasoningResult = await runReasoning(this.ctx.config, memory, batch, this.getBrowser())
+        job.result = reasoningResult.response.slice(0, 2000)
         job.finishedAt = new Date().toISOString()
         job.status = JobStatus.Done
         this.ctx.eventQueue.moveJob(job, JobStatus.Processing, JobStatus.Done)
         console.log(`[loop-2:executor] === job ${job.id} done ===`)
 
-        if (batch.requiresResponse) {
-          await this.dispatchResponse(batch, result)
+        if (batch.requiresResponse && !reasoningResult.suppressReply) {
+          await this.dispatchResponse(batch, reasoningResult.response)
+        } else if (reasoningResult.suppressReply) {
+          console.log(`[loop-2:executor] job ${job.id} — suppressReply=true, skipping response dispatch`)
         } else {
           console.log(`[loop-2:executor] job ${job.id} — observation event, skipping response dispatch`)
         }
@@ -236,7 +240,7 @@ export class Orchestrator {
     try {
       if (this.ctx.config.proactiveMode) {
         const memory = loadMemoryContext(this.ctx.config)
-        await runThoughtLoop(this.ctx.config, memory)
+        await runThoughtLoop(this.ctx.config, memory, this.getBrowser())
       } else {
         console.log('[loop-3:reflection] proactive mode disabled, skipping LLM reflection')
       }
@@ -302,6 +306,15 @@ export class Orchestrator {
     if (processed > 0) {
       console.log(`[summarization] pipeline drained: ${processed} task(s) completed`)
     }
+  }
+
+  private getBrowser(): BrowserIntegration | undefined {
+    for (const integration of this.ctx.integrations) {
+      if (integration instanceof BrowserIntegration) {
+        return integration
+      }
+    }
+    return undefined
   }
 
   private sleep(ms: number): Promise<void> {

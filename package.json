@@ -18,6 +18,7 @@
   },
   "dependencies": {
     "@lancedb/lancedb": "0.18.2",
+    "playwright": "1.58.2",
     "telegram": "^2.26.16"
   },
   "devDependencies": {

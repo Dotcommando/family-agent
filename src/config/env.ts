@@ -27,6 +27,11 @@ export interface IEnvConfig {
   telegramAllowedChats: string[]
   telegramAllowedUsers: string[]
   telegramRequireMentionInGroups: boolean
+  browserProfileDir: string
+  browserHeadless: boolean
+  browserDefaultTimeout: number
+  browserMaxStepsPerRun: number
+  browserSearchEngineUrl: string
 }
 
 function readNumberEnv(name: string, fallback: number): number {
@@ -100,5 +105,10 @@ export function readEnvConfig(): IEnvConfig {
     telegramAllowedChats: readListEnv('TELEGRAM_ALLOWED_CHATS', []),
     telegramAllowedUsers: readListEnv('TELEGRAM_ALLOWED_USERS', []),
     telegramRequireMentionInGroups: readBooleanEnv('TELEGRAM_REQUIRE_MENTION_IN_GROUPS', true),
+    browserProfileDir: process.env.BROWSER_PROFILE_DIR ?? '/app/state/browser-profile',
+    browserHeadless: readBooleanEnv('BROWSER_HEADLESS', true),
+    browserDefaultTimeout: readNumberEnv('BROWSER_DEFAULT_TIMEOUT', 15000),
+    browserMaxStepsPerRun: readNumberEnv('BROWSER_MAX_STEPS_PER_RUN', 15),
+    browserSearchEngineUrl: process.env.BROWSER_SEARCH_ENGINE_URL ?? 'https://www.google.com/search?q={query}',
   }
 }

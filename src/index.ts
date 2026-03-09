@@ -89,7 +89,13 @@ async function bootstrap(): Promise<void> {
 
   console.log('[boot] initializing integrations')
   const telegram = new TelegramIntegration(appSecrets, envConfig, eventBus)
-  const browser = new BrowserIntegration()
+  const browser = new BrowserIntegration({
+    profileDir: envConfig.browserProfileDir,
+    headless: envConfig.browserHeadless,
+    defaultTimeout: envConfig.browserDefaultTimeout,
+    maxStepsPerRun: envConfig.browserMaxStepsPerRun,
+    searchEngineUrl: envConfig.browserSearchEngineUrl,
+  })
   const n8n = new N8nIntegration(appSecrets)
   const blog = new BlogIntegration()
 
